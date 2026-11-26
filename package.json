@@ -1,6 +1,6 @@
 {
   "name": "radex-ia",
-  "productName": "Radex IA",
+  "productName": "CORA-IA",
   "version": "1.0.1",
   "description": "Radex - asistente de IA conversacional con búsqueda en internet",
   "main": "main.js",
@@ -42,7 +42,7 @@
       {
         "provider": "github",
         "owner": "valverdejpedro-rgb",
-        "repo": "radex-ia",
+        "repo": "CORA-IA",
         "releaseType": "release"
       }
     ]
