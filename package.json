@@ -1,0 +1,50 @@
+{
+  "name": "radex-ia",
+  "productName": "Radex IA",
+  "version": "1.0.0",
+  "description": "Radex - asistente de IA conversacional con búsqueda en internet",
+  "main": "main.js",
+  "author": "Pedro",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "playwright-core": "^1.49.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.pedro.radexia",
+    "productName": "Radex IA",
+    "files": [
+      "main.js",
+      "preload.js",
+      "browser.js",
+      "netproxy.js",
+      "app/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "valverdejpedro-rgb",
+        "repo": "radex-ia",
+        "releaseType": "release"
+      }
+    ]
+  }
+}
