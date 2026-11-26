@@ -1,7 +1,7 @@
 {
   "name": "radex-ia",
   "productName": "CORA-IA",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Radex - asistente de IA conversacional con búsqueda en internet",
   "main": "main.js",
   "author": "Pedro",
