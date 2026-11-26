@@ -17,3 +17,9 @@ contextBridge.exposeInMainWorld('elixApp', {
   installNow: () => ipcRenderer.invoke('app:install'),
   onUpdate: (cb) => ipcRenderer.on('update:status', (_e, s) => cb(s)),
 });
+
+// Búsqueda en internet y lectura de páginas (sin abrir el navegador)
+contextBridge.exposeInMainWorld('coraWeb', {
+  search: (q) => ipcRenderer.invoke('web:search', q),
+  read: (url) => ipcRenderer.invoke('web:read', url),
+});

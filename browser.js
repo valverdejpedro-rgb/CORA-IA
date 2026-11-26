@@ -69,7 +69,7 @@ async function ensure(nombre) {
       'about:blank',
     ], { stdio: 'ignore' });
     child.on('error', () => {});
-    if (!(await waitCdp(port))) throw new Error(`No pude abrir ${name}. Ciérralo si estaba abierto con el perfil de Radex IA e inténtalo otra vez.`);
+    if (!(await waitCdp(port))) throw new Error(`No pude abrir ${name}. Ciérralo si estaba abierto con el perfil de CORA-IA e inténtalo otra vez.`);
   }
   const br = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   const ctx = br.contexts()[0] || await br.newContext();
@@ -443,7 +443,7 @@ const actions = {
   async cerrar({ navegador } = {}) {
     const name = norm(navegador) || activeName;
     const s = sessions[name];
-    if (!s) return 'No hay ningún navegador abierto por Radex IA.';
+    if (!s) return 'No hay ningún navegador abierto por CORA-IA.';
     try { const c = await s.browser.newBrowserCDPSession(); await c.send('Browser.close'); } catch {}
     delete sessions[name]; if (activeName === name) activeName = null;
     for (let i = 0; i < 24 && await cdpUp(PORTS[name]); i++) await new Promise((r) => setTimeout(r, 250)); // que se cierre del todo antes de volver a abrirlo

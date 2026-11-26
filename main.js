@@ -4,7 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const browser = require('./browser');
-const { proxyFetch } = require('./netproxy');
+const { proxyFetch, buscarWeb, leerPagina } = require('./netproxy');
 
 // Servimos app/ en localhost con puerto fijo (solo este equipo): así localStorage
 // (tus claves y ajustes) se conserva entre actualizaciones.
@@ -31,7 +31,7 @@ function startServer() {
   });
 }
 
-// Solo acepta llamadas de la propia ventana de Radex IA
+// Solo acepta llamadas de la propia ventana de CORA-IA
 const trusted = (e) => {
   const u = (e.senderFrame && e.senderFrame.url) || '';
   return u.startsWith(`http://localhost:${PORT}/`) || u.startsWith('file://');
@@ -45,6 +45,10 @@ ipcMain.handle('browser:run', (e, accion, args) => {
 
 // Llamadas a Groq / OpenRouter / Gemini desde aquí (sin límites de CORS del navegador)
 ipcMain.handle('net:fetch', (e, req) => trusted(e) ? proxyFetch(req && typeof req === 'object' ? req : {}) : { status: 0, body: 'No permitido.' });
+
+// Buscar en internet y leer páginas sin abrir el navegador
+ipcMain.handle('web:search', (e, q) => trusted(e) ? buscarWeb(q) : 'No permitido.');
+ipcMain.handle('web:read', (e, url) => trusted(e) ? leerPagina(url) : 'No permitido.');
 
 // ---- Versión instalada y actualizaciones ----
 let lastStatus = { estado: 'inicio' };
@@ -61,7 +65,7 @@ let win;
 async function createWindow() {
   const ok = await startServer();
   win = new BrowserWindow({
-    width: 900, height: 780, backgroundColor: '#050b14', title: 'Radex IA',
+    width: 1000, height: 820, minWidth: 560, minHeight: 520, backgroundColor: '#050b14', title: 'CORA-IA',
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
   });

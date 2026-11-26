@@ -1,8 +1,8 @@
 {
-  "name": "radex-ia",
+  "name": "cora-ia",
   "productName": "CORA-IA",
-  "version": "1.0.2",
-  "description": "Radex - asistente de IA conversacional con búsqueda en internet",
+  "version": "1.1.0",
+  "description": "CORA-IA - asistente de IA conversacional con búsqueda en internet",
   "main": "main.js",
   "author": "Pedro",
   "license": "UNLICENSED",
@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "com.pedro.radexia",
-    "productName": "Radex IA",
+    "productName": "CORA-IA",
     "files": [
       "main.js",
       "preload.js",

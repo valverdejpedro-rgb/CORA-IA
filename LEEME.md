@@ -1,26 +1,25 @@
-# Radex IA 1.0
+# CORA-IA 1.1
 
 Asistente de IA conversacional. En la PC se le escribe; responde con voz.
 
 ## Qué hace
 - Conversa de forma natural y precisa, con memoria de la charla (unos 15 turnos).
-- Busca en internet cuando hace falta (búsqueda integrada de Groq con los modelos gpt-oss).
-- Controla el navegador (Brave, Chrome o Edge): abrir páginas, buscar en YouTube y reproducir, pausar, etc.
+- Consulta internet **sin abrir el navegador**: búsqueda integrada de Groq (modelos gpt-oss) o, con cualquier proveedor, su propio buscador y lector de páginas.
+- Abre el navegador (Brave, Chrome o Edge) solo cuando se lo pides: una página concreta, YouTube, pausar, etc.
 - Herramientas simples: hora y fecha, calculadora, temporizador.
 - No controla el PC (volumen, audio, energía, aplicaciones): eso es de NEXODECK.
-- Ya no escucha por el micrófono de la PC. La entrada por voz llegará desde el celular (etapa siguiente).
+- La entrada por voz llegará desde el celular (etapa siguiente).
 
 ## Primer uso
-1. Doble clic en RADEX para abrir la configuración de API.
-2. Elige **Groq** y pega tu clave gratuita (console.groq.com/keys). Solo con Groq hay búsqueda en internet.
-3. Escribe tu pregunta.
-- Voz: "Motor de voz" en Navegador (voces de Windows, sin clave) o Gemini (más natural, pide clave de Gemini).
+1. Pulsa **Ajustes** (se abre solo si falta la clave).
+2. Elige **Groq** y pega tu clave gratuita (console.groq.com/keys).
+3. Escribe tu pregunta. La voz del navegador no necesita clave; Gemini (más natural) pide la suya.
 
-## Actualizar (como siempre)
-Sube los archivos a GitHub, crea la etiqueta `vX.Y.Z` (por ejemplo `v1.0.0`) y la release se publica sola.
+## Actualizar
+Sube los archivos a GitHub y crea la release con etiqueta `vX.Y.Z` o `X.Y.Z` (por ejemplo `v1.1.0`): el instalador .exe se genera solo.
 La app instalada se actualiza sola al abrirse.
 
 ## Archivos
 - `main.js`, `preload.js`: ventana, actualizaciones y puente seguro.
-- `browser.js`: control del navegador con Playwright. `netproxy.js`: llamadas a Groq/Gemini/OpenRouter.
-- `app/index.html`: toda la interfaz y el cerebro.
+- `browser.js`: control del navegador (Playwright). `netproxy.js`: llamadas a Groq/Gemini/OpenRouter, búsqueda web y lectura de páginas.
+- `app/index.html`: interfaz y cerebro.
