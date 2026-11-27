@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const browser = require('./browser');
 const { proxyFetch, buscarWeb, leerPagina, _t } = require('./netproxy');
+const { sintetizar } = require('./tts');
 const { crearRemoto } = require('./remote');
 
 // Servimos app/ en localhost con puerto fijo (solo este equipo): así localStorage
@@ -48,7 +49,9 @@ ipcMain.handle('browser:run', (e, accion, args) => {
 ipcMain.handle('net:fetch', (e, req) => trusted(e) ? proxyFetch(req && typeof req === 'object' ? req : {}) : { status: 0, body: 'No permitido.' });
 
 // Buscar en internet y leer páginas sin abrir el navegador
-ipcMain.handle('web:search', (e, q) => trusted(e) ? buscarWeb(q) : 'No permitido.');
+ipcMain.handle('web:search', (e, q, k) => trusted(e) ? buscarWeb(q, typeof k === 'string' ? k.trim().slice(0, 200) : '') : 'No permitido.');
+// Voz: texto -> audio (Edge gratis o ElevenLabs)
+ipcMain.handle('tts:speak', (e, req) => trusted(e) ? sintetizar(req) : { ok: false, error: 'No permitido.' });
 ipcMain.handle('web:read', (e, url) => trusted(e) ? leerPagina(url) : 'No permitido.');
 
 

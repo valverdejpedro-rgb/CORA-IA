@@ -84,7 +84,17 @@ async function getText(url, { timeout = 15000, max = 1500000, tipos = /text\/|ht
   throw new Error('demasiadas redirecciones');
 }
 
-const buscarWeb = (consulta) => W.buscar(consulta, (url) => getText(url, { timeout: 12000 }));
+// Buscador por API (Tavily, clave gratis): estable y pensado para IA. Solo se llama desde aquí, nunca desde la página.
+const soloTavily = (u) => u.protocol === 'https:' && u.hostname === 'api.tavily.com';
+const apiTavily = (key) => async (q) => {
+  const r = await proxyFetch({ url: 'https://api.tavily.com/search', method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
+    body: JSON.stringify({ query: q, max_results: 6, include_answer: true, search_depth: 'basic' }), timeout: 20000 }, soloTavily);
+  if (r.status === 401 || r.status === 403) throw new Error('clave de Tavily no válida');
+  if (r.status !== 200) throw new Error('error ' + r.status);
+  const d = JSON.parse(r.body);
+  return { respuesta: d.answer || '', resultados: (d.results || []).map((x) => ({ title: x.title || x.url, url: x.url, snippet: String(x.content || '').replace(/\s+/g, ' ').slice(0, 450) })) };
+};
+const buscarWeb = (consulta, key) => W.buscar(consulta, (url) => getText(url, { timeout: 12000 }), key ? { api: apiTavily(key) } : undefined);
 const leerPagina = (url) => W.leer(url, (u) => getText(u, { timeout: 15000 }));
 
-module.exports = { proxyFetch, buscarWeb, leerPagina, _t: { parseDDG: W.parseDDG, parseBing: W.parseBing, privada, esPublica } };
+module.exports = { proxyFetch, buscarWeb, leerPagina, _t: { parseDDG: W.parseDDG, parseBing: W.parseBing, parseDDGLite: W.parseDDGLite, parseMojeek: W.parseMojeek, privada, esPublica } };

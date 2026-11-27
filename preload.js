@@ -20,8 +20,13 @@ contextBridge.exposeInMainWorld('elixApp', {
 
 // Búsqueda en internet y lectura de páginas (sin abrir el navegador)
 contextBridge.exposeInMainWorld('coraWeb', {
-  search: (q) => ipcRenderer.invoke('web:search', q),
+  search: (q, key) => ipcRenderer.invoke('web:search', q, key),
   read: (url) => ipcRenderer.invoke('web:read', url),
+});
+
+// Voz de CORA-IA (Edge / ElevenLabs): el audio lo genera el proceso principal
+contextBridge.exposeInMainWorld('coraVoz', {
+  sintetizar: (req) => ipcRenderer.invoke('tts:speak', req),
 });
 
 // Micrófono del celular: el PC recibe el audio, lo entiende y ejecuta la orden
