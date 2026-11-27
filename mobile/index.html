@@ -1,1 +1,209 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CORA Mic</title>
+<style>
+  :root{--ink:#050b14;--panel:#0b1626;--line:#17304a;--ice:#d9f4ff;--mute:#7a95ad;--cy:#4fd8ff;--amber:#ffb347;--err:#ff8a8a;--ok:#6ee7a0;
+    --font:'Segoe UI',system-ui,sans-serif;color-scheme:dark;
+    padding-top:max(env(safe-area-inset-top,0px),var(--safe-area-inset-top,0px));padding-bottom:max(env(safe-area-inset-bottom,0px),var(--safe-area-inset-bottom,0px))}
+  *{box-sizing:border-box}[hidden]{display:none!important}
+  html,body{height:100%;margin:0}
+  body{background:radial-gradient(ellipse at 50% 30%,#0c2036 0,var(--ink) 65%);color:var(--ice);font:500 17px/1.4 var(--font);display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  header{width:100%;display:flex;justify-content:space-between;align-items:center;padding:14px 18px 6px}
+  h1{margin:0;font-size:20px;letter-spacing:.22em;color:var(--cy);font-weight:600}
+  #pc{font-size:14px;color:var(--mute);display:flex;align-items:center;gap:7px}
+  #dot{width:10px;height:10px;border-radius:50%;background:var(--mute)}
+  #dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}#dot.off{background:var(--err)}
+  main{flex:1;width:100%;max-width:520px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 20px;min-height:0}
+  #mic{width:176px;height:176px;border-radius:50%;border:2px solid var(--cy);background:radial-gradient(circle,#10304a 0,var(--panel) 70%);color:var(--cy);display:grid;place-items:center;cursor:pointer;filter:drop-shadow(0 0 14px var(--cy));transition:transform .15s,border-color .2s,color .2s}
+  #mic svg{width:64px;height:64px}
+  #mic:active{transform:scale(.96)}
+  #mic.rec{border-color:var(--err);color:var(--err);filter:drop-shadow(0 0 18px var(--err));animation:pulso 1.1s ease-in-out infinite}
+  #mic.env{border-color:var(--amber);color:var(--amber);filter:drop-shadow(0 0 14px var(--amber))}
+  #mic:disabled{opacity:.4}
+  @keyframes pulso{50%{transform:scale(1.07)}}
+  #msg{min-height:26px;text-align:center;color:var(--mute);font-size:16px}
+  #msg.err{color:var(--err)}
+  .caja{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px;overflow-wrap:anywhere}
+  .caja small{display:block;color:var(--mute);font-size:13px;letter-spacing:.06em;margin-bottom:2px}
+  #resp{max-height:26vh;overflow-y:auto;white-space:pre-wrap}
+  .fila{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  button.b{background:var(--panel);color:var(--ice);border:1px solid var(--line);border-radius:10px;padding:9px 16px;font:600 16px var(--font);cursor:pointer}
+  button.b:active{border-color:var(--cy)}
+  input{width:100%;background:var(--panel);color:var(--ice);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:inherit;margin-top:6px}
+  label{display:block;width:100%;color:var(--mute);font-size:15px}
+  #vinc{width:100%;display:flex;flex-direction:column;gap:14px}
+  #vinc p{margin:0;color:var(--mute);font-size:15px}
+</style>
+</head>
+<body>
+<header><h1>CORA MIC</h1><div id="pc"><span id="dot"></span><span id="pcTxt">Sin vincular</span></div></header>
 
+<main>
+  <!-- Vincular con el PC (solo la primera vez) -->
+  <section id="vinc" hidden>
+    <p>Abre CORA-IA en tu PC → <b>Ajustes</b>. Allí verás la dirección del PC y un código de 6 números. Escríbelos aquí una sola vez. El celular y el PC deben estar en el mismo Wi-Fi.</p>
+    <label>Dirección del PC <input id="ip" inputmode="decimal" placeholder="192.168.1.20" autocomplete="off"></label>
+    <label>Código <input id="cod" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="off"></label>
+    <button class="b" id="conectar">Conectar</button>
+    <div id="vmsg" style="min-height:22px;color:var(--err);font-size:15px"></div>
+  </section>
+
+  <!-- Micrófono -->
+  <section id="uso" hidden style="width:100%;display:flex;flex-direction:column;align-items:center;gap:18px">
+    <button id="mic" aria-label="Hablar con CORA-IA"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/></svg></button>
+    <div id="msg">Toca el micrófono y habla</div>
+    <div class="caja" id="cEntendi" hidden><small>ENTENDÍ</small><span id="entendi"></span></div>
+    <div class="caja" id="cResp" hidden><small>CORA-IA RESPONDE (en el PC)</small><div id="resp"></div></div>
+    <div class="fila"><button class="b" id="callar">Callar</button><button class="b" id="cambiar">Cambiar PC</button></div>
+  </section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const store = { get: (k) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
+const PORT = 38428;
+let ip = store.get('cora:ip'), code = store.get('cora:code');
+let grabando = false, enviando = false, ultimoRid = -1, fallosSeguidos = 0, buscando = false, lock = null;
+
+/* ---------- Red ---------- */
+async function pedir(host, ruta, { method = 'GET', body, conCodigo = true, timeout = 8000 } = {}) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const headers = {};
+    if (conCodigo) headers['x-cora-code'] = code;
+    if (body) headers['content-type'] = 'application/json';
+    const r = await fetch(`http://${host}:${PORT}${ruta}`, { method, headers, body, signal: ctl.signal });
+    let data = {}; try { data = await r.json(); } catch {}
+    return { ok: r.ok, status: r.status, data };
+  } finally { clearTimeout(t); }
+}
+const ipValida = (x) => /^(\d{1,3}\.){3}\d{1,3}$/.test(x) && x.split('.').every((n) => +n <= 255);
+
+/* ---------- Pantallas ---------- */
+function mostrar(vinculado) { $('#vinc').hidden = vinculado; $('#uso').hidden = !vinculado; }
+function pcEstado(clase, txt) { $('#dot').className = clase; $('#pcTxt').textContent = txt; }
+function msg(t, err) { $('#msg').textContent = t; $('#msg').className = err ? 'err' : ''; }
+
+/* ---------- Vincular ---------- */
+$('#conectar').onclick = async () => {
+  const i = $('#ip').value.trim(), c = $('#cod').value.trim();
+  $('#vmsg').textContent = '';
+  if (!ipValida(i)) { $('#vmsg').textContent = 'La dirección debe verse así: 192.168.1.20'; return; }
+  if (!/^\d{6}$/.test(c)) { $('#vmsg').textContent = 'El código tiene 6 números.'; return; }
+  $('#conectar').disabled = true; $('#vmsg').style.color = 'var(--mute)'; $('#vmsg').textContent = 'Conectando…';
+  code = c;
+  try {
+    const r = await pedir(i, '/estado');
+    $('#vmsg').style.color = 'var(--err)';
+    if (r.ok) { ip = i; store.set('cora:ip', ip); store.set('cora:code', code); iniciarUso(); }
+    else if (r.status === 401) $('#vmsg').textContent = 'Código incorrecto. Míralo de nuevo en Ajustes del PC.';
+    else if (r.status === 429) $('#vmsg').textContent = 'Demasiados intentos. Espera 5 minutos.';
+    else $('#vmsg').textContent = 'Respondió algo raro (' + r.status + ').';
+  } catch {
+    $('#vmsg').style.color = 'var(--err)';
+    $('#vmsg').textContent = 'No encuentro el PC. Revisa que CORA-IA esté abierta, que estén en el mismo Wi-Fi y que la dirección sea la correcta (si el PC muestra varias, prueba otra). Si Windows pregunta por el firewall, pulsa Permitir.';
+  } finally { $('#conectar').disabled = false; }
+};
+$('#cambiar').onclick = () => { if (grabando) return; store.del('cora:ip'); store.del('cora:code'); ip = code = ''; clearInterval(sondeo); $('#ip').value = ''; $('#cod').value = ''; $('#vmsg').textContent = ''; pcEstado('', 'Sin vincular'); mostrar(false); };
+
+/* ---------- Estado del PC (cada 2 s) y búsqueda si cambió su dirección ---------- */
+let sondeo = 0;
+function iniciarUso() {
+  mostrar(true); msg('Toca el micrófono y habla'); fallosSeguidos = 0; ultimoRid = -1;
+  clearInterval(sondeo); sonda(); sondeo = setInterval(sonda, 2000);
+  pedirPantalla();
+}
+async function sonda() {
+  if (!ip) return;
+  try {
+    const r = await pedir(ip, '/estado', { timeout: 2500 });
+    if (r.status === 401) { clearInterval(sondeo); pcEstado('off', 'Código cambiado'); msg('El código del PC cambió. Pulsa «Cambiar PC» y vincula otra vez.', true); return; }
+    if (!r.ok) throw new Error('x');
+    fallosSeguidos = 0; pcEstado('on', 'PC: ' + (r.data.label || 'conectado'));
+    // Mostrar la respuesta nueva de CORA-IA (solo texto en pantalla; la voz sale del PC)
+    if (ultimoRid === -1) ultimoRid = r.data.rid;
+    else if (r.data.rid !== ultimoRid) { ultimoRid = r.data.rid; if (r.data.respuesta) { $('#resp').textContent = r.data.respuesta; $('#cResp').hidden = false; } }
+  } catch {
+    fallosSeguidos++;
+    if (fallosSeguidos >= 2) { pcEstado('off', 'PC no responde'); if (!grabando && !enviando) buscarPC(); }
+  }
+}
+// Si el router le cambió la dirección al PC, se busca en la misma red (sin enviar el código)
+async function buscarPC() {
+  if (buscando || !ipValida(ip)) return;
+  buscando = true; pcEstado('off', 'Buscando el PC…');
+  try {
+    const base = ip.split('.').slice(0, 3).join('.');
+    for (let ini = 1; ini <= 254; ini += 32) {
+      const lote = [];
+      for (let n = ini; n < ini + 32 && n <= 254; n++) {
+        const h = `${base}.${n}`;
+        lote.push(pedir(h, '/hola', { conCodigo: false, timeout: 700 }).then((r) => (r.ok && r.data.app === 'CORA-IA' ? h : null)).catch(() => null));
+      }
+      const hallado = (await Promise.all(lote)).find(Boolean);
+      if (hallado) { ip = hallado; store.set('cora:ip', ip); fallosSeguidos = 0; pcEstado('on', 'PC encontrado'); return; }
+    }
+    pcEstado('off', 'PC no responde');
+  } finally { buscando = false; }
+}
+
+/* ---------- Grabar ---------- */
+let stream, rec, chunks, ctx, analiza, vad = 0;
+function tipoAudio() { for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t; return ''; }
+async function pedirPantalla() { try { if (navigator.wakeLock && !lock) { lock = await navigator.wakeLock.request('screen'); lock.addEventListener('release', () => { lock = null; }); } } catch {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && ip) pedirPantalla(); });
+
+async function empezar() {
+  if (grabando || enviando) return;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch { msg('No tengo permiso del micrófono. Actívalo en Ajustes del teléfono → Apps → CORA Mic.', true); return; }
+  const mime = tipoAudio();
+  try { rec = new MediaRecorder(stream, mime ? { mimeType: mime } : {}); } catch { msg('Este teléfono no puede grabar audio aquí.', true); parar(true); return; }
+  chunks = []; let oyo = false;
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => { const blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' }); liberar(); if (oyo && blob.size > 1500) enviar(blob); else { msg('No te escuché. Toca y habla otra vez.', true); fin(); } };
+  rec.start(250);
+  grabando = true; $('#mic').className = 'rec'; msg('Te escucho… (toca de nuevo para terminar)');
+
+  // Detecta cuándo empiezas y cuándo terminas de hablar
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaStreamSource(stream); analiza = ctx.createAnalyser(); analiza.fftSize = 1024; src.connect(analiza);
+  const buf = new Uint8Array(analiza.fftSize);
+  const t0 = Date.now(); let ruido = 0, nRuido = 0, silencioDesde = 0;
+  vad = setInterval(() => {
+    analiza.getByteTimeDomainData(buf);
+    let s = 0; for (const v of buf) { const x = (v - 128) / 128; s += x * x; }
+    const rms = Math.sqrt(s / buf.length), t = Date.now() - t0;
+    if (t < 400) { ruido += rms; nRuido++; return; }
+    const umbral = Math.max(0.025, (ruido / Math.max(1, nRuido)) * 3);
+    if (rms > umbral) { oyo = true; silencioDesde = 0; }
+    else if (oyo) { silencioDesde = silencioDesde || Date.now(); if (Date.now() - silencioDesde > 1300) parar(); }
+    if (!oyo && t > 8000) parar();      // nadie habló
+    if (t > 30000) parar();             // máximo 30 s
+  }, 100);
+}
+function parar(sinEnviar) { clearInterval(vad); if (rec && rec.state !== 'inactive' && !sinEnviar) { try { rec.stop(); } catch {} } else liberar(); grabando = false; }
+function liberar() { clearInterval(vad); try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {} try { ctx && ctx.close(); } catch {} stream = ctx = null; }
+function fin() { grabando = false; enviando = false; $('#mic').className = ''; }
+
+function aBase64(blob) { return new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(String(f.result).split(',')[1]); f.onerror = rej; f.readAsDataURL(blob); }); }
+async function enviar(blob) {
+  grabando = false; enviando = true; $('#mic').className = 'env'; msg('Enviando al PC…');
+  try {
+    const r = await pedir(ip, '/voz', { method: 'POST', timeout: 45000, body: JSON.stringify({ audio: await aBase64(blob), mime: blob.type }) });
+    if (r.ok) { $('#entendi').textContent = r.data.texto; $('#cEntendi').hidden = false; msg('Listo: CORA-IA lo está haciendo en el PC'); }
+    else msg(r.data.error || 'El PC no pudo entenderlo.', true);
+  } catch { msg('No pude llegar al PC. ¿Está abierta CORA-IA y en el mismo Wi-Fi?', true); }
+  fin();
+}
+$('#mic').onclick = () => { if (enviando) return; if (grabando) parar(); else empezar(); };
+$('#callar').onclick = () => { pedir(ip, '/callar', { method: 'POST', timeout: 3000 }).catch(() => {}); };
+
+if (ip && code) iniciarUso(); else mostrar(false);
+</script>
+</body>
+</html>
