@@ -23,3 +23,14 @@ contextBridge.exposeInMainWorld('coraWeb', {
   search: (q) => ipcRenderer.invoke('web:search', q),
   read: (url) => ipcRenderer.invoke('web:read', url),
 });
+
+// Micrófono del celular: el PC recibe el audio, lo entiende y ejecuta la orden
+contextBridge.exposeInMainWorld('coraRemote', {
+  config: () => ipcRenderer.invoke('remote:config'),
+  activar: (v) => ipcRenderer.invoke('remote:activar', !!v),
+  nuevoCodigo: () => ipcRenderer.invoke('remote:nuevo'),
+  publicar: (s) => ipcRenderer.send('remote:publicar', s),
+  responder: (id, r) => ipcRenderer.send('remote:resultado', id, r),
+  onVoz: (cb) => ipcRenderer.on('remote:voz', (_e, m) => cb(m)),
+  onCallar: (cb) => ipcRenderer.on('remote:callar', () => cb()),
+});

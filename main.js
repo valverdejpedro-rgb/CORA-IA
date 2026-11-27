@@ -4,7 +4,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const browser = require('./browser');
-const { proxyFetch, buscarWeb, leerPagina } = require('./netproxy');
+const { proxyFetch, buscarWeb, leerPagina, _t } = require('./netproxy');
+const { crearRemoto } = require('./remote');
 
 // Servimos app/ en localhost con puerto fijo (solo este equipo): así localStorage
 // (tus claves y ajustes) se conserva entre actualizaciones.
@@ -49,6 +50,34 @@ ipcMain.handle('net:fetch', (e, req) => trusted(e) ? proxyFetch(req && typeof re
 // Buscar en internet y leer páginas sin abrir el navegador
 ipcMain.handle('web:search', (e, q) => trusted(e) ? buscarWeb(q) : 'No permitido.');
 ipcMain.handle('web:read', (e, url) => trusted(e) ? leerPagina(url) : 'No permitido.');
+
+
+// ---- Micrófono del celular (red local, con código) ----
+const pendientes = new Map(); let nVoz = 0;
+function pedirVoz(m) {
+  return new Promise((resolve) => {
+    if (!win) return resolve({ error: 'CORA-IA no está lista en el PC.' });
+    const id = ++nVoz;
+    const t = setTimeout(() => { pendientes.delete(id); resolve({ error: 'El PC tardó demasiado en entender el audio.' }); }, 45000);
+    pendientes.set(id, (r) => { clearTimeout(t); resolve(r); });
+    try { win.webContents.send('remote:voz', { id, ...m }); } catch { clearTimeout(t); pendientes.delete(id); resolve({ error: 'No pude pasar el audio a CORA-IA.' }); }
+  });
+}
+const remoto = crearRemoto({
+  dir: app.getPath('userData'),
+  esPrivada: (ip) => _t.privada(ip),
+  alVoz: pedirVoz,
+  alCallar: () => { try { win && win.webContents.send('remote:callar'); } catch {} },
+});
+ipcMain.on('remote:resultado', (e, id, r) => {
+  if (!trusted(e)) return;
+  const f = pendientes.get(id);
+  if (f) { pendientes.delete(id); f(r && typeof r === 'object' ? r : { error: 'Respuesta no válida.' }); }
+});
+ipcMain.on('remote:publicar', (e, s) => { if (trusted(e)) remoto.publicar(s); });
+ipcMain.handle('remote:config', (e) => trusted(e) ? remoto.info() : null);
+ipcMain.handle('remote:activar', (e, v) => { if (!trusted(e)) return null; remoto.activar(v); return remoto.info(); });
+ipcMain.handle('remote:nuevo', (e) => { if (!trusted(e)) return null; remoto.nuevoCodigo(); return remoto.info(); });
 
 // ---- Versión instalada y actualizaciones ----
 let lastStatus = { estado: 'inicio' };
@@ -102,6 +131,6 @@ const lock = app.requestSingleInstanceLock();
 if (!lock) app.quit();
 else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-  app.whenReady().then(() => { createWindow(); setupUpdater(); });
+  app.whenReady().then(() => { createWindow(); setupUpdater(); remoto.iniciar(); });
   app.on('window-all-closed', () => app.quit());
 }

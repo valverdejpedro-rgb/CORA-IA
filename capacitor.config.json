@@ -1,7 +1,9 @@
 {
   "appId": "com.pedro.coraia",
-  "appName": "CORA-IA",
-  "webDir": "app",
+  "appName": "CORA Mic",
+  "webDir": "mobile",
   "backgroundColor": "#050b14",
-  "plugins": { "CapacitorHttp": { "enabled": true } }
+  "server": {
+    "androidScheme": "http"
+  }
 }
