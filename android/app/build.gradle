@@ -3,12 +3,17 @@ apply plugin: 'com.android.application'
 android {
     namespace = "com.pedro.coraia"
     compileSdk = rootProject.ext.compileSdkVersion
+    // La firma ya NO está en el repositorio: el servidor de GitHub la recibe como "secretos".
+    def claveArchivo = System.getenv('CORA_KEYSTORE_FILE')
+    def clavePass = System.getenv('CORA_KEYSTORE_PASSWORD')
     signingConfigs {
         cora {
-            storeFile file('cora.keystore')
-            storePassword 'coraia2026'
-            keyAlias 'cora'
-            keyPassword 'coraia2026'
+            if (claveArchivo && clavePass) {
+                storeFile file(claveArchivo)
+                storePassword clavePass
+                keyAlias 'cora'
+                keyPassword clavePass
+            }
         }
     }
     lint {
@@ -30,7 +35,7 @@ android {
     }
     buildTypes {
         release {
-            signingConfig signingConfigs.cora
+            if (claveArchivo && clavePass) { signingConfig signingConfigs.cora }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
