@@ -71,7 +71,13 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          # Maven Central a veces responde 429 (demasiadas peticiones) a GitHub: se reintenta solo
+          for i in 1 2 3 4; do
+            ./gradlew assembleRelease --no-daemon && break
+            [ "$i" = 4 ] && exit 1
+            echo "::warning::Falló la descarga de dependencias (intento $i). Reintento en $((i*45)) s..."
+            sleep $((i*45))
+          done
       - run: cp android/app/build/outputs/apk/release/app-release.apk "CORA-Mic-$V.apk"
       - uses: softprops/action-gh-release@v2
         with:
