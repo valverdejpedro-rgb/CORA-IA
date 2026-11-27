@@ -1,0 +1,38 @@
+name: Limpiar archivos sueltos (una sola vez)
+
+on:
+  workflow_dispatch:
+    inputs:
+      borrar:
+        description: 'Escribe SI para borrar de verdad. Con NO solo muestra la lista.'
+        default: 'NO'
+
+permissions:
+  contents: write
+
+jobs:
+  limpiar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Buscar archivos sueltos en la raíz
+        run: |
+          PERMITIDOS=".gitignore LEEME.md README.md LICENSE browser.js capacitor.config.json main.js netproxy.js package-lock.json package.json preload.js remote.js"
+          git ls-files | grep -v '/' > todos.txt || true
+          : > sobran.txt
+          while IFS= read -r f; do
+            case " $PERMITIDOS " in
+              *" $f "*) ;;
+              *) echo "$f" >> sobran.txt ;;
+            esac
+          done < todos.txt
+          echo "Archivos sueltos que sobran: $(wc -l < sobran.txt)"
+          cat sobran.txt
+      - name: Borrarlos (solo si escribiste SI)
+        if: ${{ github.event.inputs.borrar == 'SI' }}
+        run: |
+          while IFS= read -r f; do git rm -q -- "$f"; done < sobran.txt
+          git config user.name "limpieza"
+          git config user.email "limpieza@users.noreply.github.com"
+          git commit -m "Limpiar archivos sueltos de la raíz" || echo "No había nada que borrar"
+          git push
