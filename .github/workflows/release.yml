@@ -43,11 +43,11 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
-      - name: Instalar componentes de Android
+      - name: Preparar el SDK de Android (ya viene en el servidor)
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-36" "build-tools;36.0.0" > /dev/null || true
       - name: Usar como versión la de la etiqueta
         run: |
           V="${GITHUB_REF_NAME#v}"
