@@ -98,14 +98,21 @@
   <label>Voz Gemini <select id="gvoice" aria-label="Voz de Gemini"><option>Kore</option><option>Aoede</option><option>Zephyr</option><option>Puck</option><option>Charon</option><option>Fenrir</option><option>Orus</option></select></label>
   <label>Voz del navegador <select id="voice" aria-label="Voz del navegador"></select></label>
   <label>Velocidad <input type="range" id="rate" min="0.8" max="1.3" step="0.05" value="1.05"></label>
+  <div id="celCfg" style="flex-basis:100%;display:none;flex-wrap:wrap;gap:6px 18px;align-items:center;border-top:1px solid #17304a;padding-top:8px;margin-top:4px">
+    <strong style="flex-basis:100%">Micrófono del celular</strong>
+    <label><input type="checkbox" id="celActivo"> Activado</label>
+    <span>Dirección del PC: <b id="celDir">…</b></span>
+    <span>Código: <b id="celCod" style="letter-spacing:.15em">······</b></span>
+    <button type="button" class="mini" id="celNuevo" title="Genera otro código de 6 números">Cambiar código</button>
+    <span id="celEstado" style="flex-basis:100%;font-size:14px"></span>
+  </div>
   </div>
 </div>
 
 <script src="websearch.js"></script>
-<script src="mobile.js"></script>
 <script>
 /* =====================================================================
-   CORA-IA 1.1 — asistente de IA conversacional
+   CORA-IA 1.2 — asistente de IA conversacional
    Solo texto en este equipo; responde con voz. Cerebro en la nube (Groq por defecto)
    con búsqueda en internet integrada y control del navegador (Brave, Chrome, Edge).
    ===================================================================== */
@@ -116,7 +123,7 @@ const store = {
 };
 let history = [], busy = false, speaking = false;
 
-function setState(s, label) { document.body.dataset.state = s; $('#status').textContent = label; }
+function setState(s, label) { document.body.dataset.state = s; $('#status').textContent = label; try { window.coraRemote && window.coraRemote.publicar({ estado: s, label }); } catch {} }
 function addEl(cls, text, href) {
   const d = document.createElement(href ? 'a' : 'div');
   d.className = cls; d.textContent = text;
@@ -593,6 +600,7 @@ async function send(text) {
     history.push({ role: 'assistant', content: reply });
     history = recortar(history);
     addLine('jarvis', reply);
+    try { window.coraRemote && window.coraRemote.publicar({ respuesta: reply }); } catch {}
   } catch (e) {
     history.pop();
     addLine('error', (e && e.message) || 'Error desconocido');
@@ -608,6 +616,54 @@ $('#nuevo').onclick = nuevaConversacion;
 $('#form').onsubmit = (e) => { e.preventDefault(); const t = $('#text').value; $('#text').value = ''; send(t); };
 setState('idle', 'En espera');
 { const c0 = cfg(); if (c0.prov !== 'custom' && !c0.key) { $('#apiCfg').style.display = 'flex'; } if (c0.prov !== 'custom' && !c0.key) addLine('error', `Para empezar, pega tu clave gratuita de ${PRESETS[c0.prov].name}: pulsa «Ajustes» para abrir la configuración de API. ${PRESETS[c0.prov].help}`); }
+
+/* ---------- Micrófono del celular (CORA Mic) ---------- */
+if (window.coraRemote) {
+  const R = window.coraRemote;
+  $('#celCfg').style.display = 'flex';
+  async function pintarCel() {
+    let i = null; try { i = await R.config(); } catch {}
+    if (!i) return;
+    $('#celActivo').checked = !!i.activo;
+    $('#celDir').textContent = i.ips && i.ips.length ? i.ips.join('  o  ') : 'sin Wi-Fi detectado';
+    $('#celCod').textContent = i.codigo || '······';
+    $('#celEstado').textContent = !i.activo ? 'Apagado: el celular no puede conectarse.'
+      : i.error ? 'Error: ' + i.error
+      : i.conectado ? 'Celular conectado.' : 'Esperando al celular (misma red Wi-Fi). Si Windows pregunta por el firewall, pulsa Permitir.';
+  }
+  $('#celActivo').onchange = async (e) => { await R.activar(e.target.checked); pintarCel(); };
+  $('#celNuevo').onclick = async () => { await R.nuevoCodigo(); pintarCel(); };
+  pintarCel(); setInterval(pintarCel, 3000);
+
+  R.onCallar(() => stopSpeaking());
+  R.onVoz(async (m) => {
+    try {
+      const key = keyOf('groq');
+      if (!key) return R.responder(m.id, { error: 'Falta la clave de Groq en el PC (Ajustes).' });
+      if (busy) return R.responder(m.id, { error: 'CORA-IA está ocupada. Intenta de nuevo en un momento.' });
+      const bin = atob(m.audio), bytes = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+      const mime = String(m.mime || 'audio/webm');
+      const ext = /mp4|m4a|aac/.test(mime) ? 'm4a' : /ogg/.test(mime) ? 'ogg' : 'webm';
+      setState('thinking', 'Escuchando');
+      const r = await apiFetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        headers: { Authorization: 'Bearer ' + key },
+        form: { fields: { model: 'whisper-large-v3-turbo', language: 'es', response_format: 'json', temperature: '0' }, file: { bytes, type: mime, name: 'voz.' + ext } },
+        timeout: 40000,
+      });
+      const texto = String((r.data && r.data.text) || '').trim();
+      if (!r.ok || !texto) {
+        setState('idle', 'En espera');
+        return R.responder(m.id, { error: r.status === 401 ? 'La clave de Groq no es válida.' : !r.ok ? 'Groq no pudo entender el audio (error ' + r.status + ').' : 'No te entendí. Habla otra vez.' });
+      }
+      R.responder(m.id, { texto });
+      send(texto);
+    } catch (e) {
+      setState('idle', 'En espera');
+      R.responder(m.id, { error: 'No pude procesar el audio: ' + ((e && e.message) || e) });
+    }
+  });
+}
 
 </script>
 </body>
