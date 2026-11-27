@@ -1,0 +1,7 @@
+{
+  "appId": "com.pedro.coraia",
+  "appName": "CORA-IA",
+  "webDir": "app",
+  "backgroundColor": "#050b14",
+  "plugins": { "CapacitorHttp": { "enabled": true } }
+}
