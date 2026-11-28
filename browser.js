@@ -39,6 +39,28 @@ async function waitCdp(port, ms = 20000) {
   return false;
 }
 
+// Si el navegador de CORA-IA se cerró a la fuerza (apagar el PC, cerrar CORA-IA), Chrome/Edge/Brave lo anota como
+// «cierre inesperado» y al abrir muestran la burbuja «¿Restaurar páginas?». Se corrige la marca antes de abrirlo.
+function marcarCierreLimpio(dir) {
+  try {
+    const def = path.join(dir, 'Default');
+    // 1) Que no quede nada que «restaurar»: se borran los archivos de la sesión anterior
+    for (const n of ['Sessions', 'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs']) {
+      try { fs.rmSync(path.join(def, n), { recursive: true, force: true }); } catch {}
+    }
+    // 2) Marca de cierre normal y «al iniciar: página nueva» (nunca «continuar donde lo dejé»)
+    const f = path.join(def, 'Preferences');
+    if (!fs.existsSync(f)) return;
+    const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+    j.profile = j.profile || {};
+    j.profile.exit_type = 'Normal'; j.profile.exited_cleanly = true;
+    j.session = j.session || {};
+    j.session.restore_on_startup = 5;
+    delete j.session.startup_urls;
+    fs.writeFileSync(f, JSON.stringify(j));
+  } catch {}
+}
+
 // CLAVE PARA QUE LOS VIDEOS NO SE CORTEN: el navegador se abre como un Chrome/Edge/Brave NORMAL
 // (lo lanza Windows, no Playwright) y ELIX solo se conecta a él por el puerto local. Así YouTube no ve
 // ningún rastro de automatización (ni flags de prueba, ni webdriver, ni scripts inyectados).
@@ -58,12 +80,16 @@ async function ensure(nombre) {
   const port = PORTS[name];
   const dir = path.join(app.getPath('userData'), 'browser-profiles', name);
   if (!(await cdpUp(port))) {
+    marcarCierreLimpio(dir); // evita el aviso «no se cerró correctamente: ¿Restaurar páginas?»
     const child = spawn(exe, [
       `--user-data-dir=${dir}`,
       `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
       '--no-first-run',
       '--no-default-browser-check',
+      '--disable-session-crashed-bubble',
+      '--hide-crash-restore-bubble',
+      '--noerrdialogs',
       '--start-maximized',
       '--autoplay-policy=no-user-gesture-required',
       'about:blank',
@@ -153,6 +179,7 @@ const WIN_CS = [
   '  [DllImport("user32.dll", EntryPoint="GetWindowLongW")] static extern int GetWindowLong(IntPtr h, int i);',
   '  [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int c);',
   '  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);',
+  '  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);',
   '  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);',
   '  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);',
   '  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();',
@@ -185,6 +212,10 @@ const WIN_CS = [
   '  public static string ListCsv(string[] names, bool chromium) {',
   '    var hs = new List<long>(); var ts = new List<string>(); Collect(names, chromium, hs, ts);',
   '    var o = new List<string>(); foreach (var x in hs) o.Add(x.ToString()); return string.Join(",", o.ToArray()); }',
+  '  public static int CloseAll(string[] names, bool chromium) {',
+  '    var hs = new List<long>(); var ts = new List<string>(); Collect(names, chromium, hs, ts);',
+  '    foreach (var x in hs) PostMessage(new IntPtr(x), 0x0010, IntPtr.Zero, IntPtr.Zero);',
+  '    return hs.Count; }',
   '  public static long Pick(string[] names, bool chromium, long[] skip, string prefer, bool needNew) {',
   '    var hs = new List<long>(); var ts = new List<string>(); Collect(names, chromium, hs, ts);',
   '    string pf = Fold(prefer == null ? "" : prefer); long best = 0;',
@@ -246,6 +277,14 @@ async function focusWin(names, o = {}) {
 
 const PROC = { chrome: 'chrome', edge: 'msedge', brave: 'brave' };
 
+// Pide (WM_CLOSE, como la X) que se cierren todas las ventanas de ese navegador y cuenta las que quedan
+async function cerrarVentanas(names) {
+  const n = cleanNames(names); if (!n.length) return { cerradas: 0, quedan: 0 };
+  const out = await psWin(`${psNames(n)}\n$c=[WF]::CloseAll($names,$true)\nStart-Sleep -Milliseconds 2500\n$q=[WF]::ListCsv($names,$true)\n$k=@($q -split ',' | Where-Object { $_ }).Count\nWrite-Output ('CERRADAS:' + $c + ';QUEDAN:' + $k)`, 30000);
+  const m = /CERRADAS:(\d+);QUEDAN:(\d+)/.exec(out);
+  return m ? { cerradas: +m[1], quedan: +m[2] } : { cerradas: 0, quedan: 0, error: true };
+}
+
 // Ventana nueva del MISMO navegador y la misma sesión (como Ctrl+N)
 async function nuevaVentana(s) {
   const c = await s.browser.newBrowserCDPSession();
@@ -282,9 +321,11 @@ async function mostrar(s, name, before = [], nueva = false) {
   try {
     const cdp = await s.page.context().newCDPSession(s.page);
     try {
-      const { windowId } = await cdp.send('Browser.getWindowForTarget');
-      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {});
-      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } }).catch(() => {});
+      const { windowId, bounds } = await cdp.send('Browser.getWindowForTarget');
+      const st = bounds && bounds.windowState;
+      // Solo se toca lo necesario: no se «restaura» una ventana que ya está maximizada
+      if (st === 'minimized') await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {});
+      if (st !== 'maximized') await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } }).catch(() => {});
     } finally { await cdp.detach().catch(() => {}); }
   } catch {}
   await s.page.bringToFront().catch(() => {});
@@ -339,6 +380,12 @@ async function videoCmd(page, fn, arg) {
     };
     const step = arg > 0 && arg <= 100 ? arg : 20;
     switch (fn) {
+      case 'estado': {
+        const t = (document.title || '').replace(/^\(\d+\)\s*/, '').replace(/\s*-\s*YouTube$/, '');
+        const mm = (x) => Math.floor((x || 0) / 60) + ':' + String(Math.floor((x || 0) % 60)).padStart(2, '0');
+        return 'Estado real del reproductor ahora mismo' + (t ? ' (' + t + ')' : '') + ': volumen ' + curVol() + '%' + (isMuted() ? ', SILENCIADO' : '') +
+          ', ' + (v.paused ? 'en pausa' : 'reproduciéndose') + ', va por ' + mm(v.currentTime) + (isFinite(v.duration) ? ' de ' + mm(v.duration) : '') + ', velocidad x' + v.playbackRate + '.';
+      }
       case 'pausar': v.pause(); return 'Pausado.';
       case 'reanudar': v.play(); return 'Reanudado.';
       case 'silenciar': if (api && api.mute) api.mute(); else v.muted = true; return 'Video silenciado (volumen del video: ' + curVol() + '%).';
@@ -480,14 +527,88 @@ const actions = {
     return `${{ maximized: 'Maximicé', minimized: 'Minimicé', normal: 'Restauré' }[state]} ${name}.`;
   },
 
+  // Cierra POR COMPLETO el navegador: primero el de CORA-IA (cierre normal por el protocolo) y después cualquier
+  // ventana que quede de ese navegador (las que abriste tú), con el mismo gesto que la X: sin matar procesos.
   async cerrar({ navegador } = {}) {
-    const name = norm(navegador) || activeName;
-    const s = sessions[name];
-    if (!s) return 'No hay ningún navegador abierto por CORA-IA.';
-    try { const c = await s.browser.newBrowserCDPSession(); await c.send('Browser.close'); } catch {}
+    const name = norm(navegador) || activeName || Object.keys(sessions)[0];
+    if (!name) return 'Dime qué navegador cierro: chrome, edge o brave.';
+    let cora = false;
+    try {
+      let br = sessions[name] && sessions[name].browser;
+      if (!br && await cdpUp(PORTS[name])) br = await chromium.connectOverCDP(`http://127.0.0.1:${PORTS[name]}`);
+      if (br) { const c = await br.newBrowserCDPSession(); await c.send('Browser.close').catch(() => {}); cora = true; }
+    } catch {}
     delete sessions[name]; if (activeName === name) activeName = null;
     for (let i = 0; i < 24 && await cdpUp(PORTS[name]); i++) await new Promise((r) => setTimeout(r, 250)); // que se cierre del todo antes de volver a abrirlo
-    return `Cerré ${name}.`;
+    const o = await cerrarVentanas([PROC[name]]);
+    const nombre = { chrome: 'Chrome', edge: 'Edge', brave: 'Brave' }[name] || name;
+    if (o.error && !cora) return `No pude comprobar las ventanas de ${nombre}.`;
+    if (!cora && !o.cerradas) return `No había ninguna ventana de ${nombre} abierta.`;
+    if (o.quedan > 0) return `Cerré ${nombre}, pero todavía le quedan ${o.quedan} ventanas abiertas: puede estar pidiendo confirmar algo (por ejemplo una descarga en curso).`;
+    return `Cerré ${nombre} por completo (todas sus ventanas).`;
+  },
+
+  // Cuenta de Google y listas de YouTube. La cuenta vive en el perfil del navegador de CORA-IA: se inicia sesión
+  // una sola vez y queda guardada para siempre (cookies del perfil).
+  async playlist({ accion, nombre }) {
+    const s = await cur();
+    const p = s.page, name = activeName;
+    if (accion === 'iniciar_sesion') {
+      await p.goto('https://accounts.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await mostrar(s, name);
+      return 'Abrí el inicio de sesión de Google en el navegador de CORA-IA. El usuario debe iniciar sesión una sola vez ahí: la cuenta queda guardada en este navegador y se usará siempre (YouTube, listas, «Me gusta»).';
+    }
+    if (!/youtube\.com\/watch/.test(p.url())) return 'No hay un video de YouTube reproduciéndose en el navegador. Primero pon el video.';
+    const conCuenta = await p.evaluate(() => !!document.querySelector('#avatar-btn, button#avatar-btn')).catch(() => false);
+    if (!conCuenta) return 'No hay ninguna cuenta de Google iniciada en el navegador de CORA-IA, así que no se puede guardar. Usa la acción iniciar_sesion para que el usuario inicie sesión una sola vez.';
+
+    if (accion === 'me_gusta') {
+      const b = p.locator('like-button-view-model button, #segmented-like-button button, ytd-toggle-button-renderer#like-button button').first();
+      try { await b.waitFor({ timeout: 6000 }); } catch { return 'No encontré el botón «Me gusta» en la página.'; }
+      if ((await b.getAttribute('aria-pressed')) === 'true') return 'Ese video ya tenía tu «Me gusta».';
+      await b.click({ timeout: 4000 });
+      await p.waitForTimeout(900);
+      return (await b.getAttribute('aria-pressed')) === 'true' ? 'Listo: le di «Me gusta» (queda en tu lista «Videos que me gustan»).' : 'Hice clic en «Me gusta», pero no pude confirmar que quedara marcado.';
+    }
+
+    if (accion === 'guardar') {
+      const lista = String(nombre || '').trim();
+      if (!lista) return 'Falta el nombre de la lista de reproducción.';
+      try {
+        let b = p.getByRole('button', { name: /^(Guardar|Save)\b/i }).first();
+        if (!(await b.isVisible({ timeout: 1500 }).catch(() => false))) {
+          await p.locator('ytd-watch-metadata').getByRole('button', { name: /más acciones|more actions/i }).first().click({ timeout: 4000 });
+          b = p.getByRole('menuitem', { name: /Guardar|Save/i }).first();
+        }
+        await b.click({ timeout: 4000 });
+      } catch { return 'No pude abrir el menú «Guardar» de YouTube (la página puede haber cambiado).'; }
+      const pop = p.locator('ytd-popup-container');
+      await p.waitForTimeout(1200);
+      const OPC = 'ytd-playlist-add-to-option-renderer, toggleable-list-item-view-model, yt-list-item-view-model, [role="checkbox"], [role="menuitemcheckbox"], [role="option"]';
+      const marcada = (el) => el.evaluate((e) => e.getAttribute('aria-checked') === 'true' || !!e.querySelector('[aria-checked="true"], input:checked'));
+      let item = pop.locator(OPC).filter({ hasText: new RegExp(lista.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }).first();
+      let creada = false;
+      if (!(await item.isVisible({ timeout: 1500 }).catch(() => false))) {
+        try { // la lista no existe: se crea (privada por defecto) y el video se agrega solo
+          await pop.getByRole('button', { name: /nueva lista|new playlist|crear lista|create (new )?playlist/i }).first()
+            .or(pop.getByText(/nueva lista de reproducci[oó]n|new playlist/i).first()).click({ timeout: 4000 });
+          await pop.locator('input[type="text"], textarea, input').first().fill(lista, { timeout: 4000 });
+          await pop.getByRole('button', { name: /^(crear|create)$/i }).first().click({ timeout: 4000 });
+          creada = true;
+          await p.waitForTimeout(1200);
+        } catch { await p.keyboard.press('Escape').catch(() => {}); return `No encontré la lista «${lista}» y no pude crearla desde aquí.`; }
+      } else {
+        if (await marcada(item).catch(() => false)) { await p.keyboard.press('Escape').catch(() => {}); return `Ese video ya estaba guardado en «${lista}».`; }
+        await item.click({ timeout: 4000 });
+        await p.waitForTimeout(1000);
+        const ok = await marcada(item).catch(() => false);
+        await p.keyboard.press('Escape').catch(() => {});
+        return ok ? `Listo: guardé el video en la lista «${lista}».` : `Hice clic en la lista «${lista}», pero no pude confirmar que quedara guardado.`;
+      }
+      await p.keyboard.press('Escape').catch(() => {});
+      return creada ? `Creé la lista «${lista}» (privada) y guardé el video en ella. No pude confirmarlo visualmente.` : 'No pude completar el guardado.';
+    }
+    return 'Acción de lista no válida.';
   },
 };
 

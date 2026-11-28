@@ -1,6 +1,6 @@
 // Control del equipo (solo Windows) para CORA-IA — lista CERRADA de acciones.
 // Etapa 1: leer (dispositivos de salida/entrada, volúmenes, apps con sonido, planes de energía).
-// Etapa 2: volumen y silencio, en general y por aplicación. Además: maximizar/minimizar/restaurar ventanas (sin cerrarlas ni escribir en ellas).
+// Etapa 2: volumen y silencio, en general y por aplicación. Además: maximizar/minimizar/restaurar ventanas (y cerrarlas de forma normal, como con la X; nunca a la fuerza).
 // Sin programas de terceros: usa Core Audio de Windows (C# compilado una vez con PowerShell) y powercfg.
 const fs = require('fs');
 const os = require('os');
@@ -431,6 +431,7 @@ namespace Cora
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
         [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder sb, int max);
         [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
@@ -526,6 +527,40 @@ namespace Cora
                 if (accion == "restaurar_todas") { MostrarEscritorio("UndoMinimizeAll"); return "{\"ok\":true,\"todas\":true,\"estado\":\"restauradas\"}"; }
                 List<Win> todas = Lista();
                 if (accion == "listar") return "{\"ok\":true,\"ventanas\":" + JsonLista(todas) + "}";
+                if (accion == "cerrar")
+                {
+                    if (nombre == null || nombre.Length == 0) return Error("Falta el nombre de la aplicacion.");
+                    List<Win> aCerrar = new List<Win>();
+                    foreach (Win w in todas) if (string.Equals(w.App, nombre, StringComparison.OrdinalIgnoreCase)) aCerrar.Add(w);
+                    if (aCerrar.Count == 0)
+                    {
+                        Dictionary<string, bool> coinc = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                        foreach (Win w in todas)
+                            if (w.App.IndexOf(nombre, StringComparison.OrdinalIgnoreCase) >= 0 || w.Titulo.IndexOf(nombre, StringComparison.OrdinalIgnoreCase) >= 0) coinc[w.App] = true;
+                        if (coinc.Count > 1)
+                        {
+                            StringBuilder cc = new StringBuilder();
+                            foreach (string a in coinc.Keys) { if (cc.Length > 0) cc.Append(", "); cc.Append(a); }
+                            return Error("Hay varias aplicaciones que coinciden (" + cc.ToString() + "). Dime cual.");
+                        }
+                        if (coinc.Count == 1)
+                        {
+                            string unica2 = "";
+                            foreach (string a in coinc.Keys) unica2 = a;
+                            foreach (Win w in todas) if (string.Equals(w.App, unica2, StringComparison.OrdinalIgnoreCase)) aCerrar.Add(w);
+                        }
+                    }
+                    if (aCerrar.Count == 0) return "{\"ok\":false,\"error\":\"No encontre una ventana abierta de esa aplicacion.\",\"ventanas\":" + JsonLista(todas) + "}";
+                    string nombreApp = aCerrar[0].App;
+                    string bajo = nombreApp.ToLowerInvariant();
+                    if (bajo == "cora-ia" || bajo == "cora ia" || bajo == "electron" || bajo == "dwm" || bajo == "winlogon" || bajo == "csrss" || bajo == "searchhost" || bajo == "startmenuexperiencehost" || bajo == "shellexperiencehost")
+                        return Error("Esa ventana no se puede cerrar desde CORA-IA (es CORA-IA misma o una parte de Windows).");
+                    foreach (Win w in aCerrar) PostMessage(w.H, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                    System.Threading.Thread.Sleep(2000);
+                    int quedan = 0;
+                    foreach (Win w in Lista()) if (string.Equals(w.App, nombreApp, StringComparison.OrdinalIgnoreCase)) quedan++;
+                    return "{\"ok\":true,\"cerrar\":true,\"app\":\"" + Esc(nombreApp) + "\",\"cerradas\":" + aCerrar.Count.ToString() + ",\"quedan\":" + quedan.ToString() + "}";
+                }
                 int cmd;
                 if (accion == "maximizar") cmd = 3; else if (accion == "minimizar") cmd = 6; else if (accion == "restaurar") cmd = 9; else return Error("Accion no permitida.");
                 if (nombre == null || nombre.Length == 0) return Error("Falta el nombre de la aplicacion.");
@@ -742,11 +777,11 @@ async function app({ app: nombre, accion, valor } = {}) {
   return `Hecho. ${r.app}: ${r.silenciado ? `silenciada (volumen guardado ${r.volumen}%)` : `con sonido, volumen al ${r.volumen}%`}. Solo se cambió esa aplicación; el volumen general sigue igual.`;
 }
 
-const ACC_VENTANA = ['listar', 'maximizar', 'minimizar', 'restaurar', 'minimizar_todas', 'restaurar_todas'];
+const ACC_VENTANA = ['listar', 'maximizar', 'minimizar', 'restaurar', 'cerrar', 'minimizar_todas', 'restaurar_todas'];
 async function ventana({ app: nombre, accion } = {}) {
   if (!ACC_VENTANA.includes(accion)) return 'Acción de ventana no válida. Usa: ' + ACC_VENTANA.join(', ') + '.';
   const n = String(nombre || '').trim();
-  const necesitaApp = ['maximizar', 'minimizar', 'restaurar'].includes(accion);
+  const necesitaApp = ['maximizar', 'minimizar', 'restaurar', 'cerrar'].includes(accion);
   if (necesitaApp && !/^[\p{L}\p{N} ._+\-]{1,60}$/u.test(n)) return 'Dime el nombre de la aplicación (usa la acción listar para verlas).';
   const r = await llamar({ CORA_OP: 'ventana', CORA_APP: necesitaApp ? n : '', CORA_ACCION: accion });
   const lista = (r && r.ventanas && r.ventanas.length) ? r.ventanas.map((v) => `- ${v.app} · «${v.titulo}» · ${v.estado}`).join('\n') : '';
@@ -755,6 +790,10 @@ async function ventana({ app: nombre, accion } = {}) {
     return (noHay ? 'No encontré una ventana abierta de esa aplicación.' : 'No pude hacer el cambio: ' + String((r && r.error) || 'error desconocido').replace(/\.+$/, '') + '.') + (lista ? ' Ventanas abiertas ahora:\n' + lista : '');
   }
   if (accion === 'listar') return lista ? 'VENTANAS ABIERTAS (de arriba hacia abajo):\n' + lista : 'No veo ventanas abiertas.';
+  if (r.cerrar) {
+    const q = +r.quedan || 0;
+    return `Cerré ${r.cerradas} ventana${r.cerradas === 1 ? '' : 's'} de ${r.app}.` + (q > 0 ? ` Todavía quedan ${q} abiertas: la aplicación puede estar pidiendo confirmar algo (por ejemplo guardar cambios).` : ' Ya no queda ninguna abierta.');
+  }
   if (r.todas) return `Hecho. Todas las ventanas quedaron ${r.estado}.`;
   const cant = r.cantidad > 1 ? ` (${r.cantidad} ventanas)` : '';
   return `Hecho. ${r.app}${cant}: ahora ${r.estado}. (Es lo que Windows reporta tras el cambio.)`;
