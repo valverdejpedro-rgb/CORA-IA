@@ -24,6 +24,8 @@
   #status{color:var(--mute);font-size:16px}
   #ver{color:var(--mute);font-size:14px;cursor:pointer;letter-spacing:.04em}
   #ver:hover{color:var(--cy)}
+  #motores{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--mute);letter-spacing:.02em}
+  #motores .resp{color:#ffb347}
 
   .mini{background:none;border:1px solid var(--line);color:var(--ice);border-radius:8px;padding:3px 12px;font:inherit;font-size:15px;cursor:pointer}
   .mini:hover{border-color:var(--cy);color:var(--cy)}
@@ -67,7 +69,7 @@
 </style>
 </head>
 <body data-state="idle">
-<header><div style="display:flex;gap:14px;align-items:center"><button class="orb" id="orb" aria-label="Interrumpir a CORA-IA"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span><span class="core"></span></button><h1 id="logo" style="user-select:none">CORA-IA</h1><span id="ver" title="Versión instalada (clic para buscar actualizaciones)"></span></div><span id="status" aria-live="polite">En espera</span></header>
+<header><div style="display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap"><button class="orb" id="orb" aria-label="Interrumpir a CORA-IA"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span><span class="core"></span></button><h1 id="logo" style="user-select:none">CORA-IA</h1><span id="ver" title="Versión instalada (clic para buscar actualizaciones)"></span><span id="motores" title="Motores que se están usando ahora. En naranja: se está usando un respaldo."></span></div><span id="status" aria-live="polite">En espera</span></header>
 
 <div id="log" aria-live="polite"></div>
 
@@ -91,7 +93,10 @@
   <label>Clave <input type="password" id="key" placeholder="pega tu clave" autocomplete="off" aria-label="Clave de API" class="mini" style="width:150px"></label>
   <label>Modelo <input type="text" id="model" aria-label="Modelo" class="mini" style="width:150px"></label>
   <label id="urlRow" hidden>URL <input type="text" id="url" placeholder="http://localhost:11434/v1" aria-label="URL base" class="mini" style="width:200px"></label>
-  <label id="kgroqRow" hidden>Clave Groq (oído del celular) <input type="password" id="kgroq" placeholder="gsk_…" autocomplete="off" aria-label="Clave de Groq" class="mini" style="width:150px"></label>
+  <label id="kgroqRow" hidden>Clave Groq (respaldo y oído del celular) <input type="password" id="kgroq" placeholder="gsk_…" autocomplete="off" aria-label="Clave de Groq" class="mini" style="width:150px"></label>
+  <label id="kgemRow" hidden>Clave Gemini (respaldo) <input type="password" id="kgemb" placeholder="AIza…" autocomplete="off" aria-label="Clave de Gemini de respaldo" class="mini" style="width:150px"></label>
+  <label id="koprRow" hidden>Clave OpenRouter (respaldo) <input type="password" id="kopr" placeholder="sk-or-…" autocomplete="off" aria-label="Clave de OpenRouter de respaldo" class="mini" style="width:150px"></label>
+  <span style="flex-basis:100%;font-size:13px;opacity:.8">Respaldo automático: si el proveedor que usas llega a su límite o falla, CORA-IA cambia sola a otro que tenga clave aquí, y vuelve al principal cuando se recupera.</span>
   <label>Clave Tavily (búsqueda más fiable, opcional) <input type="password" id="ktav" placeholder="tvly-…" autocomplete="off" aria-label="Clave de Tavily" class="mini" style="width:150px"></label>
   <span id="keyHelp" style="flex-basis:100%;font-size:14px"></span>
   <label>Motor de voz <select id="tts" aria-label="Motor de voz"><option value="edge">Edge (natural, gratis, sin límite)</option><option value="eleven">ElevenLabs (con tu clave)</option><option value="browser">Navegador (de emergencia)</option></select></label>
@@ -239,45 +244,62 @@ function troceos(texto, max = 240) {
   if (cur) out.push(cur);
   return out.length ? out : [String(texto).slice(0, max)];
 }
-// Devuelve true si habló, o el motivo (texto) si falló
-async function speakCloud(text, engine) {
-  speaking = true; setState('thinking', 'Preparando voz');
-  try {
-    const trozos = troceos(text);
-    const pedir = (t) => window.coraVoz.sintetizar({ engine, text: t, voz: $('#evoice').value, rate: +$('#rate').value, key: keyOf('eleven'), voiceId: ($('#elid').value || ELID_DEF).trim() })
-      .catch((e) => ({ ok: false, error: String((e && e.message) || e).slice(0, 100) }));
-    let sig = pedir(trozos[0]);
-    for (let i = 0; i < trozos.length; i++) {
-      const r = await sig;
-      if (i + 1 < trozos.length && speaking) sig = pedir(trozos[i + 1]); // se prepara el siguiente mientras suena este
-      if (!speaking) return true; // lo interrumpieron
-      if (!r || !r.ok) return (r && r.error) || 'sin respuesta';
-      ttsCtx = ttsCtx || new (window.AudioContext || window.webkitAudioContext)();
-      if (ttsCtx.state === 'suspended') await ttsCtx.resume();
-      const u8 = r.audio instanceof Uint8Array ? r.audio : new Uint8Array(r.audio);
-      const buf = await ttsCtx.decodeAudioData(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength));
-      if (!speaking) return true;
-      setState('speaking', 'Hablando');
-      await new Promise((res) => { const src = ttsCtx.createBufferSource(); src.buffer = buf; src.connect(ttsCtx.destination); voiceLevelOn(ttsCtx, src); src.onended = res; ttsSrc = src; src.start(); });
-    }
-    return true;
-  } catch (e) { return String((e && e.message) || e).slice(0, 100); }
-  finally { ttsSrc = null; }
+const VOZ_NOMBRE = { edge: 'Edge', eleven: 'ElevenLabs', browser: 'Navegador' };
+const VOZ_DURO = /acabaron|clave|ID de voz|permiso|inusual|plan de pago|no encontré|no válid/i; // errores que no se arreglan reintentando
+// Motores de nube en orden: el elegido, luego el otro (si es posible); los que están en pausa por fallo, al final
+function cadenaVoz(pref) {
+  const cand = pref === 'browser' ? [] : [pref, pref === 'edge' ? 'eleven' : 'edge'].filter((m) => m !== 'eleven' || keyOf('eleven'));
+  const ahora = Date.now();
+  return [...cand.filter((m) => !(VOZ_COOL[m] > ahora)), ...cand.filter((m) => VOZ_COOL[m] > ahora)];
 }
 async function speak(text) {
   if (!text || $('#mute').checked) return;
-  const eng = $('#tts').value;
-  if ((eng === 'edge' || eng === 'eleven') && window.coraVoz) {
-    // Una sola voz: si falla, NO se cambia a otra para que siempre suene igual.
-    const r = await speakCloud(text, eng);
-    speaking = false;
-    if (r !== true && !speak.warned) {
-      speak.warned = true; setTimeout(() => { speak.warned = false; }, 120000);
-      addLine('error', `La voz de ${eng === 'edge' ? 'Edge' : 'ElevenLabs'} no respondió: ${r}. No cambio de voz para que siempre suene igual; si lo prefieres, elige «Navegador» en Motor de voz.`);
+  const pref = $('#tts').value;
+  if (!window.coraVoz || pref === 'browser') { MOT.voz = { txt: 'Navegador', resp: false }; pintaMotores(); return speakBrowser(text); }
+  const motores = cadenaVoz(pref), trozos = troceos(text);
+  let eng = motores.shift();
+  speaking = true; setState('thinking', 'Preparando voz');
+  const pedir = (m, t) => window.coraVoz.sintetizar({ engine: m, text: t, voz: $('#evoice').value, rate: +$('#rate').value, key: keyOf('eleven'), voiceId: ($('#elid').value || ELID_DEF).trim() })
+    .catch((e) => ({ ok: false, error: String((e && e.message) || e).slice(0, 100) }));
+  // Pide un trozo: reintenta si el fallo parece pasajero y, si el motor no sirve, pasa al siguiente (así la voz no se corta a mitad)
+  async function obtener(i) {
+    while (eng && speaking) {
+      let r = null;
+      for (let k = 0; k < 2 && speaking; k++) {
+        r = await pedir(eng, trozos[i]);
+        if (r && r.ok) break;
+        if (k === 0 && !VOZ_DURO.test((r && r.error) || '')) await pausa(700); else break;
+      }
+      if (r && r.ok) return { r, eng };
+      if (!speaking) return null;
+      const motivo = (r && r.error) || 'sin respuesta', viejo = eng;
+      VOZ_COOL[viejo] = Date.now() + (/acabaron|plan de pago/.test(motivo) ? 1800000 : 180000);
+      eng = motores.shift();
+      addEl('chip', `La voz de ${VOZ_NOMBRE[viejo]} falló (${motivo}). ${eng ? 'Sigo con ' + VOZ_NOMBRE[eng] + '.' : 'Sigo con la voz del navegador.'}`);
     }
-    return;
+    return null;
   }
-  return speakBrowser(text);
+  const alNavegador = async (i) => { speaking = false; MOT.voz = { txt: 'Navegador', resp: true }; pintaMotores(); await speakBrowser(trozos.slice(i).join(' ')); };
+  try {
+    let sig = obtener(0);
+    for (let i = 0; i < trozos.length; i++) {
+      const got = await sig;
+      if (!speaking) return; // lo interrumpieron
+      if (!got) return await alNavegador(i);
+      if (i + 1 < trozos.length) sig = obtener(i + 1); // se prepara el siguiente mientras suena este
+      let buf;
+      try {
+        ttsCtx = ttsCtx || new (window.AudioContext || window.webkitAudioContext)();
+        if (ttsCtx.state === 'suspended') await ttsCtx.resume();
+        const u8 = got.r.audio instanceof Uint8Array ? got.r.audio : new Uint8Array(got.r.audio);
+        buf = await ttsCtx.decodeAudioData(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength));
+      } catch (e) { addEl('chip', 'No pude reproducir el audio de ' + VOZ_NOMBRE[got.eng] + '. Sigo con la voz del navegador.'); return await alNavegador(i); }
+      if (!speaking) return;
+      MOT.voz = { txt: got.eng === 'edge' ? 'Edge · ' + nombreVozEdge() : VOZ_NOMBRE[got.eng], resp: got.eng !== pref }; pintaMotores();
+      setState('speaking', 'Hablando');
+      await new Promise((res) => { const src = ttsCtx.createBufferSource(); src.buffer = buf; src.connect(ttsCtx.destination); voiceLevelOn(ttsCtx, src); src.onended = res; ttsSrc = src; src.start(); });
+    }
+  } finally { ttsSrc = null; speaking = false; }
 }
 $('#probarVoz').onclick = async () => { stopSpeaking(); await speak('Hola, soy CORA. Así sueno ahora mismo. ¿Qué te parece mi voz?'); if (!busy) setState('idle', 'En espera'); };
 
@@ -453,12 +475,15 @@ function loadCfg() {
   $('#model').value = savedModel;
   $('#url').value = store.get('jarvis:url', PRESETS.custom.url);
   $('#urlRow').hidden = prov !== 'custom';
-  $('#kgroqRow').hidden = prov === 'groq';
+  $('#kgroqRow').hidden = prov === 'groq'; $('#kgemRow').hidden = prov === 'gemini'; $('#koprRow').hidden = prov === 'openrouter';
+  $('#kgemb').value = keyOf('gemini'); $('#kopr').value = keyOf('openrouter');
   $('#keyHelp').textContent = PRESETS[prov].help;
 }
 $('#prov').onchange = (e) => { store.set('jarvis:prov', e.target.value); loadCfg(); };
 $('#key').onchange = (e) => store.set('jarvis:key:' + $('#prov').value, e.target.value.trim());
 $('#kgroq').onchange = (e) => store.set('jarvis:key:groq', e.target.value.trim());
+$('#kgemb').onchange = (e) => store.set('jarvis:key:gemini', e.target.value.trim());
+$('#kopr').onchange = (e) => store.set('jarvis:key:openrouter', e.target.value.trim());
 $('#model').onchange = (e) => store.set('jarvis:model2:' + $('#prov').value, e.target.value.trim());
 $('#url').onchange = (e) => store.set('jarvis:url', e.target.value.trim());
 $('#ktav').value = keyOf('tavily'); $('#ktav').onchange = (e) => store.set('jarvis:key:tavily', e.target.value.trim());
@@ -517,6 +542,34 @@ function recortar(h) {
   return h;
 }
 
+/* ---------- Motores en uso (indicador de arriba) y pausas por límite ---------- */
+const MOT = { cerebro: null, voz: null, busq: null, rutaLLM: '' };
+const COOL_LLM = {}, VOZ_COOL = {}; // motor -> hasta cuándo se evita (límite o fallo reciente)
+const pausa = (ms) => new Promise((res) => setTimeout(res, ms));
+const corto = (m) => String(m || '').split('/').pop().replace(/:free$/, '');
+function nombreVozEdge() { const o = $('#evoice').selectedOptions[0]; return o ? o.textContent.split(' · ')[0] : ''; }
+function pintaMotores() {
+  const el = $('#motores'); if (!el) return;
+  const prov = $('#prov').value, P = PRESETS[prov] || { name: prov, model: '' }, e = $('#tts').value;
+  const cer = MOT.cerebro || { txt: P.name + ' · ' + corto($('#model').value.trim() || P.model), resp: false };
+  const voz = MOT.voz || { txt: e === 'edge' ? 'Edge · ' + nombreVozEdge() : e === 'eleven' ? 'ElevenLabs' : 'Navegador', resp: false };
+  const bus = MOT.busq || { txt: keyOf('tavily') ? 'Tavily' : (prov === 'groq' && /gpt-oss/.test($('#model').value) ? 'Groq (integrada)' : 'DuckDuckGo'), resp: false };
+  el.textContent = '';
+  for (const [lab, o] of [['Cerebro', cer], ['Voz', voz], ['Búsqueda', bus]]) {
+    const sp = document.createElement('span');
+    sp.textContent = lab + ': ' + o.txt + (o.resp && !/respaldo/.test(o.txt) ? ' (respaldo)' : '');
+    if (o.resp) sp.className = 'resp';
+    el.appendChild(sp);
+  }
+}
+function reiniciaMotores() { MOT.cerebro = MOT.voz = MOT.busq = null; MOT.rutaLLM = ''; pintaMotores(); }
+function anotaBusqueda(out) {
+  const t = String(out || ''), m = /^Resultados de internet para «.*?» \(([^;]+);/.exec(t);
+  if (m) MOT.busq = { txt: m[1].trim(), resp: /respaldo/.test(m[1]) };
+  else if (/^No pude obtener resultados/.test(t)) MOT.busq = { txt: 'sin respuesta', resp: true };
+  pintaMotores();
+}
+
 async function askLLM(msgs, tools) {
   const c = cfg();
   const defs = tools.map((t) => {
@@ -528,36 +581,43 @@ async function askLLM(msgs, tools) {
     }
     return { type: 'function', function: fn };
   });
-  const P = PRESETS[c.prov];
-  let model = c.model;
-  const fallbacks = P.fallbacks || [];
-  const timeoutMs = c.prov === 'groq' ? 50000 : 30000; // buscar en internet tarda más que responder de memoria
-  const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-  const conBusqueda = (mdl) => c.prov === 'groq' && /gpt-oss/.test(mdl) && !SEARCH.off;
-  async function post(messages) {
-    const order = [model, ...fallbacks.filter((x) => x !== model)];
+  const usado = {}; // modelo que funcionó en cada proveedor durante esta respuesta
+  const falla = (R, short, cool, message) => ({ message, failover: true, short, cool, prov: R.prov });
+  // Una "ruta" = un proveedor con su clave y su modelo. Primero el elegido; luego los que tengan clave guardada.
+  function rutasLLM() {
+    const mk = (p, act) => ({ prov: p, P: PRESETS[p], base: act ? c.base : PRESETS[p].url, key: act ? c.key : keyOf(p),
+      model: usado[p] || (act ? c.model : (store.get('jarvis:model2:' + p, PRESETS[p].model) || PRESETS[p].model)), activa: act });
+    const todas = [mk(c.prov, true), ...['groq', 'gemini', 'openrouter'].filter((p) => p !== c.prov && keyOf(p)).map((p) => mk(p, false))];
+    const ahora = Date.now();
+    return [...todas.filter((r) => !(COOL_LLM[r.prov] > ahora)), ...todas.filter((r) => COOL_LLM[r.prov] > ahora)]; // los que están en pausa, al final
+  }
+  async function postRoute(R, messages) {
+    const P = R.P, fallbacks = P.fallbacks || [];
+    const timeoutMs = R.prov === 'groq' ? 50000 : 30000; // buscar en internet tarda más que responder de memoria
+    const conBusqueda = (mdl) => R.prov === 'groq' && /gpt-oss/.test(mdl) && !SEARCH.off;
+    const order = [R.model, ...fallbacks.filter((x) => x !== R.model)];
     let last = { status: 0, detail: '' };
     for (const mdl of order) {
       const more = order.indexOf(mdl) < order.length - 1;
       for (let attempt = 0; attempt < 2; attempt++) {
         const headers = { 'content-type': 'application/json' };
-        if (c.key) headers.authorization = 'Bearer ' + c.key;
+        if (R.key) headers.authorization = 'Bearer ' + R.key;
         const tl = conBusqueda(mdl) ? [...defs, { type: 'browser_search' }] : defs;
-        const payload = { model: mdl, messages, max_tokens: c.prov === 'groq' ? 2500 : 1500, temperature: 0.5 };
+        const payload = { model: mdl, messages, max_tokens: R.prov === 'groq' ? 2500 : 1500, temperature: 0.5 };
         if (tl.length) payload.tools = tl;
-        if (c.prov === 'groq' && /gpt-oss/.test(mdl)) payload.reasoning_effort = 'medium'; // piensa lo justo para ser preciso
+        if (R.prov === 'groq' && /gpt-oss/.test(mdl)) payload.reasoning_effort = 'medium'; // piensa lo justo para ser preciso
         let r;
-        $('#status').textContent = 'Consultando ' + mdl;
+        $('#status').textContent = 'Consultando ' + corto(mdl);
         try {
-          r = await apiFetch(c.base + '/chat/completions', { headers, body: JSON.stringify(payload), timeout: timeoutMs });
+          r = await apiFetch(R.base + '/chat/completions', { headers, body: JSON.stringify(payload), timeout: timeoutMs });
         } catch (e) {
           if (e.name === 'AbortError') { last = { status: 0, detail: 'timeout' }; break; }
-          throw { message: 'No pude conectar con el proveedor. Revisa tu internet o la URL.' };
+          throw falla(R, 'sin conexión', 120000, 'No pude conectar con el proveedor. Revisa tu internet o la URL.');
         }
         const d = r.data;
         if (r.ok) {
-          if (mdl !== c.model && last.status === 404) { $('#model').value = mdl; store.set('jarvis:model2:' + c.prov, mdl); }
-          model = mdl; return d;
+          if (R.activa && mdl !== c.model && last.status === 404) { $('#model').value = mdl; store.set('jarvis:model2:' + c.prov, mdl); }
+          usado[R.prov] = mdl; return d;
         }
         const info = { status: r.status, detail: (Array.isArray(d) ? d[0] : d)?.error?.message || '' };
         // Groq rechazó la búsqueda integrada: se sigue sin ella (solo en esta sesión) y se avisa una vez
@@ -567,17 +627,40 @@ async function askLLM(msgs, tools) {
         }
         if (r.status !== 404 || (!last.status && !last.detail)) last = info;
         if (r.status === 400 && more && /tool|function/i.test(last.detail)) break;
-        if ([400, 401, 403].includes(r.status)) throw { message: r.status === 401 ? `La clave de ${P.name} no es válida. Revísala en el panel de API (botón «Ajustes»).` : `Error ${r.status}. ${last.detail}`.trim() };
+        if ([400, 401, 402, 403].includes(r.status)) throw falla(R, r.status === 401 ? 'clave no válida' : r.status === 402 ? 'sin saldo' : 'error ' + r.status, r.status === 400 ? 60000 : 600000,
+          r.status === 401 ? `La clave de ${P.name} no es válida. Revísala en el panel de API (botón «Ajustes»).` : r.status === 402 ? `${P.name} dice que no hay saldo o créditos disponibles.` : `Error ${r.status}. ${last.detail}`.trim());
         if (r.status === 404) break;
         if (r.status === 429 && more) break;
         if (attempt === 1) break;
         $('#status').textContent = 'Reintentando…';
-        await wait(1200 * (attempt + 1));
+        await pausa(1200 * (attempt + 1));
       }
     }
-    if (last.detail === 'timeout') throw { message: `El modelo tardó más de ${timeoutMs / 1000} segundos en responder. Prueba otra vez o cambia el modelo en el campo “Modelo”.` };
-    if (last.status === 503 || last.status === 429) throw { message: `${P.name} está saturado o llegaste al límite gratuito. Prueba de nuevo en un minuto, o cambia de proveedor en el panel de API (botón «Ajustes»).` };
-    throw { message: `Error ${last.status} del proveedor. ${last.detail}`.trim() };
+    const diario = /per day|daily|TPD|RPD|quota|cuota/i.test(last.detail || '');
+    if (last.detail === 'timeout') throw falla(R, 'tardó demasiado', 60000, `El modelo tardó más de ${timeoutMs / 1000} segundos en responder. Prueba otra vez o cambia el modelo en el campo “Modelo”.`);
+    if (last.status === 503 || last.status === 429) throw falla(R, last.status === 429 ? 'llegó a su límite' : 'está saturado', diario ? 1800000 : 90000,
+      `${P.name} está saturado o llegaste al límite gratuito. Prueba de nuevo en un minuto, o agrega en «Ajustes» la clave de otro proveedor (Groq, Gemini u OpenRouter) para que CORA-IA cambie sola.`);
+    throw falla(R, 'error ' + last.status, 60000, `Error ${last.status} del proveedor. ${last.detail}`.trim());
+  }
+  async function post(messages) {
+    const rutas = rutasLLM(), fallos = [];
+    for (let i = 0; i < rutas.length; i++) {
+      const R = rutas[i];
+      try {
+        const d = await postRoute(R, messages);
+        MOT.cerebro = { txt: R.P.name + ' · ' + corto(usado[R.prov] || R.model), resp: !R.activa };
+        if (!R.activa && MOT.rutaLLM !== R.prov) addEl('chip', `${fallos.length ? fallos.join('; ') + '. ' : ''}Sigo con ${R.P.name} como respaldo.`);
+        else if (R.activa && MOT.rutaLLM && MOT.rutaLLM !== R.prov) addEl('chip', `Volví a ${R.P.name}.`);
+        MOT.rutaLLM = R.prov; pintaMotores();
+        return d;
+      } catch (e) {
+        if (!e || !e.failover) throw e;
+        fallos.push(`${PRESETS[e.prov].name}: ${e.short}`);
+        COOL_LLM[e.prov] = Date.now() + (e.cool || 90000);
+        if (rutas.length === 1) throw e; // un solo proveedor: el mensaje de siempre
+        if (i === rutas.length - 1) throw { message: `Ningún proveedor respondió (${fallos.join('; ')}). Espera un minuto o revisa las claves en «Ajustes».` };
+      }
+    }
   }
   // La fecha va en el último mensaje del usuario (no en el sistema) para que el inicio de la petición no cambie
   const stamp = new Date().toLocaleString('es', { dateStyle: 'full', timeStyle: 'short' });
@@ -590,6 +673,7 @@ async function askLLM(msgs, tools) {
     const m = d.choices?.[0]?.message;
     if (!m) throw { message: 'El proveedor no devolvió respuesta.' };
     const { reasoning, reasoning_content, executed_tools, ...am } = m; // lo interno no se reenvía
+    if (executed_tools && executed_tools.length) { MOT.busq = { txt: 'Groq (integrada)', resp: false }; pintaMotores(); }
     messages.push(am);
     if (!m.tool_calls || !m.tool_calls.length) return { text: (m.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim(), calls };
     let cortado = false; // varios pasos en una frase: si uno falla, no se hacen los siguientes
@@ -618,6 +702,7 @@ const herramientas = () => ALL_TOOLS.map((t) => ({
     setState('acting', (ETIQUETA[t.name] || (() => t.name.startsWith('navegador') ? 'Usando el navegador…' : 'Ejecutando…'))(input));
     let out;
     try { out = await t.execute(input || {}); } catch (e) { out = 'Error: ' + (e.message || e); }
+    if (t.name === 'buscar_internet') anotaBusqueda(out);
     setState('thinking', 'Pensando');
     return out;
   },
@@ -704,6 +789,8 @@ if (window.coraRemote) {
   });
 }
 
+['#prov', '#model', '#key', '#tts', '#evoice', '#ktav', '#kel'].forEach((id) => $(id).addEventListener('change', reiniciaMotores));
+pintaMotores();
 </script>
 </body>
 </html>

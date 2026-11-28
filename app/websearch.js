@@ -96,13 +96,18 @@
     const q = String(consulta || '').trim().slice(0, 300);
     if (!q) return 'No pude buscar: falta la consulta.';
     const fallos = [];
+    let apiFallo = false;
     if (opts && opts.api) {
       for (let k = 0; k < 2; k++) {
         try {
           const r = await opts.api(q);
-          if (r && r.resultados && r.resultados.length) return formato(q, r.resultados.slice(0, 6), r.respuesta, 'buscador con API');
-          fallos.push('API: sin resultados'); break;
-        } catch (e) { fallos.push('API: ' + String((e && e.message) || e).slice(0, 60)); if (k === 0) await espera(700); }
+          if (r && r.resultados && r.resultados.length) return formato(q, r.resultados.slice(0, 6), r.respuesta, 'Tavily');
+          fallos.push('API: sin resultados'); apiFallo = true; break;
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          fallos.push('API: ' + msg.slice(0, 60)); apiFallo = true;
+          if (k === 0 && !/límite|pausa|clave|429|432|433|401|403/i.test(msg)) await espera(700); else break; // un límite o clave mala no se arregla reintentando
+        }
       }
     }
     const motores = [
@@ -112,12 +117,12 @@
       ['Bing', 'https://www.bing.com/search?setlang=es&q=' + encodeURIComponent(q), parseBing],
       ['Google Noticias', 'https://news.google.com/rss/search?hl=es-419&gl=US&ceid=US:es-419&q=' + encodeURIComponent(q), parseNewsRSS],
     ];
-    for (const [nombre, url, parse] of motores) {
+    for (const [idx, [nombre, url, parse]] of motores.entries()) {
       for (let k = 0; k < 2; k++) {
         try {
           const r = await getText(url);
           const res = parse(r.html).slice(0, 6);
-          if (res.length) return formato(q, res, '', nombre);
+          if (res.length) return formato(q, res, '', nombre + (apiFallo ? ' (respaldo de Tavily)' : idx > 0 ? ' (respaldo)' : ''));
           fallos.push(nombre + ': sin resultados'); break; // respondió pero sin resultados útiles: probar otro motor
         } catch (e) { fallos.push(nombre + ': ' + String((e && e.message) || e).slice(0, 60)); if (k === 0) await espera(700); }
       }
