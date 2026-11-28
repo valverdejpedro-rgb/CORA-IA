@@ -447,65 +447,6 @@ async function videoCmd(page, fn, arg) {
   }, { fn, arg });
 }
 
-// ---------- Perfiles y cuentas ----------
-// El navegador que CORA-IA controla (YouTube, clics, leer páginas) usa un perfil PROPIO, separado del tuyo: Chrome no deja
-// controlar el perfil normal desde otro programa. Por eso ahí no están tus cuentas hasta que inicies sesión una vez.
-// Para abrir páginas «para ti» se usa tu perfil normal de Chrome/Edge/Brave, con tu cuenta de siempre.
-const DATOS = {
-  chrome: `${L}\\Google\\Chrome\\User Data`,
-  edge: `${L}\\Microsoft\\Edge\\User Data`,
-  brave: `${L}\\BraveSoftware\\Brave-Browser\\User Data`,
-};
-const sinAcentos = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
-function perfilesDe(name) {
-  try {
-    const j = JSON.parse(fs.readFileSync(path.join(DATOS[name], 'Local State'), 'utf8'));
-    const ic = (j.profile && j.profile.info_cache) || {};
-    const lista = Object.keys(ic).map((k) => ({ dir: k, nombre: String(ic[k].name || k), email: String(ic[k].user_name || '') }));
-    return { lista, ultimo: String((j.profile && j.profile.last_used) || '') };
-  } catch { return { lista: [], ultimo: '' }; }
-}
-const verPerfil = (p) => `«${p.nombre}»${p.email ? ' (' + p.email + ')' : ' (sin cuenta de Google)'}`;
-// Cuenta de Google iniciada en el navegador propio de CORA-IA ('' si no hay)
-function cuentaCora(name) {
-  try {
-    const j = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'browser-profiles', name, 'Default', 'Preferences'), 'utf8'));
-    const a = (j.account_info || []).find((x) => x && x.email);
-    return a ? a.email : '';
-  } catch { return ''; }
-}
-const sesionViva = (name) => !!(sessions[name] && sessions[name].browser && sessions[name].browser.isConnected());
-
-// Abre el navegador NORMAL del usuario con su perfil y cuenta. Se abre como al hacer doble clic en su icono:
-// CORA-IA no lo controla después (no puede hacer clic ni leer en esa ventana).
-async function abrirPersonal(name, u, modo, perfil) {
-  const exe = findExe(name);
-  if (!exe) throw new Error(`No encontré ${name} instalado en este PC.`);
-  const { lista, ultimo } = perfilesDe(name);
-  let elegido = null;
-  const pedido = sinAcentos(perfil);
-  if (pedido && pedido !== 'personal') {
-    elegido = lista.find((p) => sinAcentos(p.email) === pedido || sinAcentos(p.dir) === pedido)
-      || lista.find((p) => sinAcentos(p.nombre).includes(pedido) || sinAcentos(p.email).includes(pedido));
-    if (!elegido) return `No encontré un perfil de ${name} que coincida con «${perfil}». Perfiles que veo: ${lista.map(verPerfil).join(', ') || 'ninguno'}.`;
-  } else {
-    elegido = lista.find((p) => p.dir === ultimo) || lista[0] || null;
-  }
-  const args = [];
-  if (elegido) args.push(`--profile-directory=${elegido.dir}`);
-  if (modo === 'sesion_nueva') args.push('--incognito');
-  else if (modo === 'ventana_nueva') args.push('--new-window');
-  if (u) args.push(u);
-  dbg(`abriendo ${name} personal perfil=${elegido ? elegido.dir : '(el que Windows elija)'} url=${u || '-'}`);
-  const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
-  child.on('error', () => {});
-  child.unref();
-  const nombre = { chrome: 'Chrome', edge: 'Edge', brave: 'Brave' }[name] || name;
-  const con = elegido ? ` con tu perfil ${verPerfil(elegido)}` : '';
-  const otros = lista.length > 1 ? ` Otros perfiles: ${lista.filter((p) => p !== elegido).map(verPerfil).join(', ')}; si quiere otro, dime cuál.` : '';
-  return `Abrí ${nombre}${con}${u ? ' en ' + u : ''}. Es tu navegador normal: yo no puedo hacer clic ni leer esa ventana ni controlar sus videos (para eso lo abro en el navegador de CORA-IA).${otros}`;
-}
-
 // Navega a la página pedida, salvo que el navegador ya se haya abierto justo en ella
 async function irA(s, destino, recien) {
   if (recien && s.inicial && s.inicial === destino && s.page === s.pagina0) {
@@ -516,14 +457,9 @@ async function irA(s, destino, recien) {
 }
 
 const actions = {
-  async abrir({ navegador, url, modo, perfil }) {
+  async abrir({ navegador, url, modo }) {
     const u = String(url || '').trim();
     if (u && !/^https?:\/\//i.test(u)) return 'URL no válida: debe empezar con http:// o https://';
-    const quiere = sinAcentos(perfil);
-    const nom = resolverNombre(navegador);
-    // Sin pedir nada especial: si el navegador de CORA-IA ya está abierto se sigue usando; si no, se abre el de la persona
-    // (con su cuenta). «perfil: cora» fuerza el navegador controlable de CORA-IA.
-    if (quiere !== 'cora' && !(!quiere && sesionViva(nom))) return abrirPersonal(nom, u, modo, perfil);
     const s = await cur(navegador, u || 'https://www.google.com');
     const name = activeName;
     const recien = !!s.fresh;
@@ -533,9 +469,7 @@ const actions = {
     await mostrar(s, name, before, nueva, recien);
     const que = destino ? (await s.page.title().catch(() => '') || destino) : 'el navegador';
     const donde = { ventana_nueva: ' en una ventana nueva', sesion_nueva: ' en una sesión nueva (aislada: sin las cuentas iniciadas en la otra ventana)', pestana_nueva: ' en una pestaña nueva' }[modo] || '';
-    const cuenta = cuentaCora(name);
-    const quien = cuenta ? ` Cuenta de Google en este navegador: ${cuenta}.` : ' Este es el navegador propio de CORA-IA y no tiene ninguna cuenta de Google iniciada (no es tu perfil normal); si quiere, puede iniciar sesión una sola vez y queda guardada.';
-    return `Abrí ${que} en ${name}${donde} y lo dejé a la vista.${quien}`;
+    return `Abrí ${que} en ${name}${donde} y lo dejé a la vista.`;
   },
 
   async youtube({ navegador, consulta, numero = 1, modo }) {
