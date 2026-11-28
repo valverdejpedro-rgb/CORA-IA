@@ -82,6 +82,26 @@ async function ensure(nombre) {
   return ses;
 }
 
+// Historial de videos de YouTube de esta sesión (para «volver al video anterior»)
+function vidId(u) { try { return new URL(u).searchParams.get('v') || ''; } catch { return ''; } }
+function anotarVideo(ses, url) {
+  const id = vidId(url);
+  if (!id || !/youtube\.com\/watch/.test(url)) return;
+  const h = ses.hist || (ses.hist = []);
+  if (h.length && vidId(h[h.length - 1]) === id) return;
+  h.push('https://www.youtube.com/watch?v=' + id);
+  if (h.length > 30) h.shift();
+}
+// Decide a qué video volver: si ya estás viendo uno, el anterior a ese; si no (p. ej. en resultados), el último visto.
+function videoAnterior(hist, urlActual) {
+  const h = (hist || []).slice();
+  const id = vidId(urlActual);
+  if (id && /youtube\.com\/watch/.test(urlActual)) {
+    while (h.length && vidId(h[h.length - 1]) === id) h.pop();
+  }
+  return h.length ? { destino: h[h.length - 1], hist: h } : { destino: null, hist: h };
+}
+
 // Red de seguridad (solo actúa si YouTube igual llegara a fallar): acepta el aviso "¿Sigues viendo?"
 // y, si aparece el error del reproductor, recarga el video en el mismo segundo.
 function startWatchdog(ses) {
@@ -93,6 +113,7 @@ function startWatchdog(ses) {
     busy = true;
     try {
       const url = page.url();
+      anotarVideo(ses, url);
       if (!/youtube\.com\/watch/.test(url)) { fails = 0; return; }
       const st = await page.evaluate(() => {
         const dlg = document.querySelector('yt-confirm-dialog-renderer');
@@ -362,6 +383,7 @@ const actions = {
     await s.page.locator(VIDEO).nth(i).click();
     await s.page.waitForSelector('video', { timeout: 15000 });
     const nota = await recoverPlayer(s.page);
+    anotarVideo(s, s.page.url());
     return `Reproduciendo "${lista[i]}" en ${activeName}${nota}. Otros resultados: ${lista.filter((_, k) => k !== i).join(' | ')}`;
   },
 
@@ -373,14 +395,32 @@ const actions = {
     await s.page.locator(VIDEO).nth(i).click();
     await s.page.waitForSelector('video', { timeout: 15000 });
     const nota = await recoverPlayer(s.page);
+    anotarVideo(s, s.page.url());
     return `Reproduciendo "${lista[i]}"${nota}.`;
   },
 
   async video({ accion, valor }) {
     const s = await cur();
     if (accion === 'siguiente') {
+      anotarVideo(s, s.page.url());
       await s.page.locator('.ytp-next-button').first().click({ timeout: 4000 });
+      await s.page.waitForTimeout(1500);
+      anotarVideo(s, s.page.url());
       return 'Pasé al siguiente video.';
+    }
+    if (accion === 'anterior') {
+      anotarVideo(s, s.page.url());
+      const antes = (s.hist || []).slice();
+      const { destino, hist } = videoAnterior(s.hist, s.page.url());
+      if (!destino) return 'No tengo un video anterior: solo recuerdo los que se reprodujeron desde que CORA-IA abrió el navegador.';
+      s.hist = hist;
+      try {
+        await s.page.goto(destino, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await s.page.waitForSelector('video', { timeout: 15000 });
+      } catch (e) { s.hist = antes; throw e; }
+      const nota = await recoverPlayer(s.page);
+      const t = (await s.page.title().catch(() => '')).replace(/^\(\d+\)\s*/, '').replace(/\s*-\s*YouTube$/, '');
+      return `Volví al video anterior${t ? ': "' + t + '"' : ''}${nota}.`;
     }
     if (accion === 'recargar') { await s.page.reload({ waitUntil: 'domcontentloaded' }); return 'Recargué la página.' + await recoverPlayer(s.page); }
     if (accion === 'pantalla_completa') { await s.page.keyboard.press('f'); return 'Alterné pantalla completa.'; }
@@ -458,4 +498,4 @@ async function run(accion, args) {
   catch (e) { return 'No pude hacerlo: ' + String(e.message || e).split('\n')[0].slice(0, 200); }
 }
 
-module.exports = { run, focusWin, listWins };
+module.exports = { run, focusWin, listWins, _t: { vidId, anotarVideo, videoAnterior } };

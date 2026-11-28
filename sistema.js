@@ -1,6 +1,6 @@
 // Control del equipo (solo Windows) para CORA-IA — lista CERRADA de acciones.
 // Etapa 1: leer (dispositivos de salida/entrada, volúmenes, apps con sonido, planes de energía).
-// Etapa 2: volumen y silencio, en general y por aplicación.
+// Etapa 2: volumen y silencio, en general y por aplicación. Además: maximizar/minimizar/restaurar ventanas (sin cerrarlas ni escribir en ellas).
 // Sin programas de terceros: usa Core Audio de Windows (C# compilado una vez con PowerShell) y powercfg.
 const fs = require('fs');
 const os = require('os');
@@ -418,6 +418,154 @@ namespace Cora
         }
     }
 }
+
+namespace Cora
+{
+    class Win { public IntPtr H; public string App; public string Titulo; public string Estado; }
+
+    public static class CoraVentanas
+    {
+        delegate bool EnumProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder sb, int max);
+        [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] static extern int GetWindowLong(IntPtr h, int idx);
+        [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
+
+        static string Esc(string s)
+        {
+            if (s == null) return "";
+            StringBuilder b = new StringBuilder();
+            foreach (char c in s)
+            {
+                if (c == '"') b.Append("\\\"");
+                else if (c == '\\') b.Append("\\\\");
+                else if (c < 32 || c > 126) b.Append("\\u").Append(((int)c).ToString("x4"));
+                else b.Append(c);
+            }
+            return b.ToString();
+        }
+
+        static string Error(string msg) { return "{\"ok\":false,\"error\":\"" + Esc(msg) + "\"}"; }
+
+        static string EstadoDe(IntPtr h)
+        {
+            if (IsIconic(h)) return "minimizada";
+            if (IsZoomed(h)) return "maximizada";
+            return "normal";
+        }
+
+        // Ventanas "normales" de aplicaciones, de arriba hacia abajo (orden de pantalla)
+        static List<Win> Lista()
+        {
+            List<Win> res = new List<Win>();
+            EnumProc cb = delegate (IntPtr h, IntPtr l)
+            {
+                if (!IsWindowVisible(h)) return true;
+                if (GetWindow(h, 4) != IntPtr.Zero) return true;
+                if ((GetWindowLong(h, -20) & 0x80) != 0) return true;
+                int cloaked;
+                if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;
+                int len = GetWindowTextLength(h);
+                if (len == 0) return true;
+                StringBuilder t = new StringBuilder(len + 1);
+                GetWindowText(h, t, t.Capacity);
+                StringBuilder c = new StringBuilder(64);
+                GetClassName(h, c, 64);
+                string cls = c.ToString();
+                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd" || cls == "Progman" || cls == "WorkerW") return true;
+                uint pid; GetWindowThreadProcessId(h, out pid);
+                string app = "";
+                try { app = Process.GetProcessById((int)pid).ProcessName; } catch (Exception) { }
+                if (app.Length == 0) return true;
+                Win w = new Win(); w.H = h; w.App = app; w.Titulo = t.ToString(); w.Estado = EstadoDe(h);
+                res.Add(w);
+                return true;
+            };
+            EnumWindows(cb, IntPtr.Zero);
+            GC.KeepAlive(cb);
+            return res;
+        }
+
+        static string JsonLista(List<Win> l)
+        {
+            StringBuilder b = new StringBuilder("[");
+            int n = 0;
+            foreach (Win w in l)
+            {
+                if (n >= 25) break;
+                if (n > 0) b.Append(",");
+                string t = w.Titulo.Length > 60 ? w.Titulo.Substring(0, 60) : w.Titulo;
+                b.Append("{\"app\":\"").Append(Esc(w.App)).Append("\",\"titulo\":\"").Append(Esc(t)).Append("\",\"estado\":\"").Append(w.Estado).Append("\"}");
+                n++;
+            }
+            return b.Append("]").ToString();
+        }
+
+        static void MostrarEscritorio(string metodo)
+        {
+            Type t = Type.GetTypeFromProgID("Shell.Application");
+            object sh = Activator.CreateInstance(t);
+            t.InvokeMember(metodo, System.Reflection.BindingFlags.InvokeMethod, null, sh, null);
+        }
+
+        // accion: listar | maximizar | minimizar | restaurar | minimizar_todas | restaurar_todas
+        public static string Ventana(string nombre, string accion)
+        {
+            try
+            {
+                if (accion == "minimizar_todas") { MostrarEscritorio("MinimizeAll"); return "{\"ok\":true,\"todas\":true,\"estado\":\"minimizadas\"}"; }
+                if (accion == "restaurar_todas") { MostrarEscritorio("UndoMinimizeAll"); return "{\"ok\":true,\"todas\":true,\"estado\":\"restauradas\"}"; }
+                List<Win> todas = Lista();
+                if (accion == "listar") return "{\"ok\":true,\"ventanas\":" + JsonLista(todas) + "}";
+                int cmd;
+                if (accion == "maximizar") cmd = 3; else if (accion == "minimizar") cmd = 6; else if (accion == "restaurar") cmd = 9; else return Error("Accion no permitida.");
+                if (nombre == null || nombre.Length == 0) return Error("Falta el nombre de la aplicacion.");
+                List<Win> sel = new List<Win>();
+                foreach (Win w in todas) if (string.Equals(w.App, nombre, StringComparison.OrdinalIgnoreCase)) sel.Add(w);
+                if (sel.Count == 0)
+                {
+                    Dictionary<string, bool> apps = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                    foreach (Win w in todas)
+                        if (w.App.IndexOf(nombre, StringComparison.OrdinalIgnoreCase) >= 0 || w.Titulo.IndexOf(nombre, StringComparison.OrdinalIgnoreCase) >= 0) apps[w.App] = true;
+                    if (apps.Count > 1)
+                    {
+                        StringBuilder c = new StringBuilder();
+                        foreach (string a in apps.Keys) { if (c.Length > 0) c.Append(", "); c.Append(a); }
+                        return Error("Hay varias aplicaciones que coinciden (" + c.ToString() + "). Dime cual.");
+                    }
+                    if (apps.Count == 1)
+                    {
+                        string unica = "";
+                        foreach (string a in apps.Keys) unica = a;
+                        foreach (Win w in todas) if (string.Equals(w.App, unica, StringComparison.OrdinalIgnoreCase)) sel.Add(w);
+                    }
+                }
+                if (sel.Count == 0) return "{\"ok\":false,\"error\":\"No encontre una ventana abierta de esa aplicacion.\",\"ventanas\":" + JsonLista(todas) + "}";
+                List<Win> objetivo = new List<Win>();
+                if (accion == "minimizar") objetivo = sel; else objetivo.Add(sel[0]);
+                foreach (Win w in objetivo) ShowWindow(w.H, cmd);
+                System.Threading.Thread.Sleep(250);
+                if (accion != "minimizar") SetForegroundWindow(objetivo[0].H);
+                string esperado = (accion == "maximizar") ? "maximizada" : (accion == "minimizar") ? "minimizada" : "normal";
+                string real = EstadoDe(objetivo[0].H);
+                bool logrado = (real == esperado);
+                if (accion == "restaurar" && real == "maximizada") logrado = true;
+                if (!logrado) return Error("Windows no dejo cambiar esa ventana (puede ser una aplicacion con permisos de administrador). Estado actual: " + real + ".");
+                return "{\"ok\":true,\"app\":\"" + Esc(objetivo[0].App) + "\",\"titulo\":\"" + Esc(objetivo[0].Titulo.Length > 60 ? objetivo[0].Titulo.Substring(0, 60) : objetivo[0].Titulo) + "\",\"estado\":\"" + real + "\",\"cantidad\":" + objetivo.Count.ToString(CultureInfo.InvariantCulture) + "}";
+            }
+            catch (Exception e) { return Error(e.Message); }
+        }
+    }
+}
 `;
 
 const SCRIPT_PS = String.raw`$ErrorActionPreference = 'Stop'
@@ -432,6 +580,7 @@ try {
     'estado'      { $r = [Cora.CoraAudio]::Estado() }
     'dispositivo' { $r = [Cora.CoraAudio]::Dispositivo($env:CORA_FLUJO, $env:CORA_ID, $env:CORA_ACCION, [int]$env:CORA_VALOR) }
     'aplicacion'  { $r = [Cora.CoraAudio]::Aplicacion($env:CORA_APP, $env:CORA_ACCION, [int]$env:CORA_VALOR) }
+    'ventana'     { $r = [Cora.CoraVentanas]::Ventana($env:CORA_APP, $env:CORA_ACCION) }
     default       { $r = '{"ok":false,"error":"operacion desconocida"}' }
   }
   [Console]::Out.Write($r)
@@ -593,4 +742,22 @@ async function app({ app: nombre, accion, valor } = {}) {
   return `Hecho. ${r.app}: ${r.silenciado ? `silenciada (volumen guardado ${r.volumen}%)` : `con sonido, volumen al ${r.volumen}%`}. Solo se cambió esa aplicación; el volumen general sigue igual.`;
 }
 
-module.exports = { estado, volumen, app, _t: { etiqueta, numerar, parsePlanes, formatearEstado, validarAccion, setRunner: (fn) => { runner = fn; }, reset: () => { ultimo = { salida: [], entrada: [] }; } } };
+const ACC_VENTANA = ['listar', 'maximizar', 'minimizar', 'restaurar', 'minimizar_todas', 'restaurar_todas'];
+async function ventana({ app: nombre, accion } = {}) {
+  if (!ACC_VENTANA.includes(accion)) return 'Acción de ventana no válida. Usa: ' + ACC_VENTANA.join(', ') + '.';
+  const n = String(nombre || '').trim();
+  const necesitaApp = ['maximizar', 'minimizar', 'restaurar'].includes(accion);
+  if (necesitaApp && !/^[\p{L}\p{N} ._+\-]{1,60}$/u.test(n)) return 'Dime el nombre de la aplicación (usa la acción listar para verlas).';
+  const r = await llamar({ CORA_OP: 'ventana', CORA_APP: necesitaApp ? n : '', CORA_ACCION: accion });
+  const lista = (r && r.ventanas && r.ventanas.length) ? r.ventanas.map((v) => `- ${v.app} · «${v.titulo}» · ${v.estado}`).join('\n') : '';
+  if (!r || !r.ok) {
+    const noHay = r && /No encontre/i.test(r.error || '');
+    return (noHay ? 'No encontré una ventana abierta de esa aplicación.' : 'No pude hacer el cambio: ' + String((r && r.error) || 'error desconocido').replace(/\.+$/, '') + '.') + (lista ? ' Ventanas abiertas ahora:\n' + lista : '');
+  }
+  if (accion === 'listar') return lista ? 'VENTANAS ABIERTAS (de arriba hacia abajo):\n' + lista : 'No veo ventanas abiertas.';
+  if (r.todas) return `Hecho. Todas las ventanas quedaron ${r.estado}.`;
+  const cant = r.cantidad > 1 ? ` (${r.cantidad} ventanas)` : '';
+  return `Hecho. ${r.app}${cant}: ahora ${r.estado}. (Es lo que Windows reporta tras el cambio.)`;
+}
+
+module.exports = { estado, volumen, app, ventana, _t: { etiqueta, numerar, parsePlanes, formatearEstado, validarAccion, setRunner: (fn) => { runner = fn; }, reset: () => { ultimo = { salida: [], entrada: [] }; } } };

@@ -55,6 +55,7 @@ ipcMain.handle('web:search', (e, q, k) => trusted(e) ? buscarWeb(q, typeof k ===
 ipcMain.handle('sistema:estado', (e) => trusted(e) ? Sistema.estado() : 'No permitido.');
 ipcMain.handle('sistema:volumen', (e, req) => trusted(e) ? Sistema.volumen(req || {}) : 'No permitido.');
 ipcMain.handle('sistema:app', (e, req) => trusted(e) ? Sistema.app(req || {}) : 'No permitido.');
+ipcMain.handle('sistema:ventana', (e, req) => trusted(e) ? Sistema.ventana(req || {}) : 'No permitido.');
 // Voz: texto -> audio (Edge gratis o ElevenLabs)
 ipcMain.handle('tts:speak', (e, req) => trusted(e) ? sintetizar(req) : { ok: false, error: 'No permitido.' });
 ipcMain.handle('web:read', (e, url) => trusted(e) ? leerPagina(url) : 'No permitido.');
