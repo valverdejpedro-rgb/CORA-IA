@@ -21,6 +21,17 @@ const sessions = {}; // nombre -> { ctx, page }
 let activeName = null;
 
 function norm(n) { return ALIAS[String(n || '').toLowerCase().trim()] || null; }
+const resolverNombre = (n) => norm(n) || activeName || (findExe('chrome') && 'chrome') || (findExe('edge') && 'edge') || 'brave';
+
+// Registro de lo que hace al abrir el navegador (para saber qué pasó si algo falla): <datos de CORA-IA>/browser.log
+let t0 = 0;
+function dbg(msg) {
+  try {
+    const f = path.join(app.getPath('userData'), 'browser.log');
+    try { if (fs.statSync(f).size > 200000) fs.writeFileSync(f, ''); } catch {}
+    fs.appendFileSync(f, `${new Date().toISOString()} +${t0 ? Date.now() - t0 : 0}ms ${msg}\n`);
+  } catch {}
+}
 function findExe(name) { return (EXES[name] || []).find((p) => { try { return fs.existsSync(p); } catch { return false; } }); }
 
 // Puerto local de depuración por navegador (solo 127.0.0.1)
@@ -32,6 +43,22 @@ function cdpUp(port) {
     r.on('error', () => resolve(false));
     r.on('timeout', () => { r.destroy(); resolve(false); });
   });
+}
+// Con el puerto ya abierto, Chrome todavía puede estar creando su primera ventana: si nos conectamos antes,
+// Playwright no la ve y abre OTRA (de ahí las dos ventanas). Se espera a que exista la pestaña inicial.
+function hayPagina(port) {
+  return new Promise((resolve) => {
+    const r = http.get({ host: '127.0.0.1', port, path: '/json/list', timeout: 1000 }, (resp) => {
+      let b = ''; resp.on('data', (d) => { b += d; }); resp.on('end', () => { try { resolve(JSON.parse(b).some((t) => t.type === 'page')); } catch { resolve(false); } });
+    });
+    r.on('error', () => resolve(false));
+    r.on('timeout', () => { r.destroy(); resolve(false); });
+  });
+}
+async function waitPagina(port, ms = 8000) {
+  const t = Date.now();
+  while (Date.now() - t < ms) { if (await hayPagina(port)) return true; await new Promise((r) => setTimeout(r, 200)); }
+  return false;
 }
 async function waitCdp(port, ms = 20000) {
   const t = Date.now();
@@ -64,8 +91,9 @@ function marcarCierreLimpio(dir) {
 // CLAVE PARA QUE LOS VIDEOS NO SE CORTEN: el navegador se abre como un Chrome/Edge/Brave NORMAL
 // (lo lanza Windows, no Playwright) y ELIX solo se conecta a él por el puerto local. Así YouTube no ve
 // ningún rastro de automatización (ni flags de prueba, ni webdriver, ni scripts inyectados).
-async function ensure(nombre) {
-  let name = norm(nombre) || activeName || (findExe('chrome') && 'chrome') || (findExe('edge') && 'edge') || 'brave';
+async function ensure(nombre, urlInicial) {
+  t0 = Date.now();
+  const name = resolverNombre(nombre);
   if (!EXES[name]) throw new Error('Navegador no soportado. Usa chrome, edge o brave.');
   const s = sessions[name];
   if (s) {
@@ -79,8 +107,12 @@ async function ensure(nombre) {
   if (!exe) throw new Error(`No encontré ${name} instalado en este PC.`);
   const port = PORTS[name];
   const dir = path.join(app.getPath('userData'), 'browser-profiles', name);
+  let inicial = '';
   if (!(await cdpUp(port))) {
     marcarCierreLimpio(dir); // evita el aviso «no se cerró correctamente: ¿Restaurar páginas?»
+    // Se abre directamente en la página pedida (antes: en blanco y luego se navegaba, y se veía como si se abriera dos veces)
+    inicial = /^https?:\/\//i.test(urlInicial || '') ? urlInicial : '';
+    dbg(`lanzando ${name} (perfil de CORA-IA) url=${inicial || 'about:blank'}`);
     const child = spawn(exe, [
       `--user-data-dir=${dir}`,
       `--remote-debugging-port=${port}`,
@@ -92,15 +124,19 @@ async function ensure(nombre) {
       '--noerrdialogs',
       '--start-maximized',
       '--autoplay-policy=no-user-gesture-required',
-      'about:blank',
+      inicial || 'about:blank',
     ], { stdio: 'ignore' });
     child.on('error', () => {});
     if (!(await waitCdp(port))) throw new Error(`No pude abrir ${name}. Ciérralo si estaba abierto con el perfil de CORA-IA e inténtalo otra vez.`);
+    dbg('puerto de control listo');
+    const lista = await waitPagina(port);
+    dbg('ventana inicial ' + (lista ? 'lista' : 'NO apareció a tiempo'));
   }
   const br = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   const ctx = br.contexts()[0] || await br.newContext();
   const page = ctx.pages()[0] || await ctx.newPage();
-  const ses = { browser: br, ctx, page, fresh: true };
+  dbg(`conectado: ${ctx.pages().length} pestaña(s) abierta(s)`);
+  const ses = { browser: br, ctx, page, pagina0: page, inicial, fresh: true };
   br.on('disconnected', () => { if (sessions[name] === ses) delete sessions[name]; if (activeName === name) activeName = null; });
   ctx.on('page', (p) => { ses.page = p; });
   startWatchdog(ses);
@@ -317,7 +353,16 @@ async function preparar(s, modo) {
 }
 
 // Deja la ventana a la vista: restaurada si estaba minimizada, maximizada y al frente
-async function mostrar(s, name, before = [], nueva = false) {
+async function mostrar(s, name, before = [], nueva = false, recien = false) {
+  if (recien && !nueva) {
+    // El navegador acaba de abrirse YA maximizado y al frente. Antes se «restauraba/maximizaba» de nuevo por el protocolo
+    // y por Windows, y la ventana parpadeaba. Ahora solo se asegura que quede al frente, sin tocar su tamaño.
+    await s.page.bringToFront().catch(() => {});
+    const prefer = await s.page.title().catch(() => '');
+    await focusWin([PROC[name]], { chromium: true, max: false, skip: before, needNew: false, prefer, wait: 4000 }).catch(() => {});
+    dbg('mostrado (sin cambiar tamaño)');
+    return;
+  }
   try {
     const cdp = await s.page.context().newCDPSession(s.page);
     try {
@@ -333,8 +378,8 @@ async function mostrar(s, name, before = [], nueva = false) {
   await focusWin([PROC[name]], { chromium: true, max: true, skip: before, needNew: nueva, prefer, wait: 6000 }).catch(() => {});
 }
 
-async function cur(nombre) {
-  const s = await ensure(nombre);
+async function cur(nombre, urlInicial) {
+  const s = await ensure(nombre, urlInicial);
   if (s.page.isClosed()) s.page = s.ctx.pages().slice(-1)[0] || await s.ctx.newPage();
   return s;
 }
@@ -402,27 +447,105 @@ async function videoCmd(page, fn, arg) {
   }, { fn, arg });
 }
 
+// ---------- Perfiles y cuentas ----------
+// El navegador que CORA-IA controla (YouTube, clics, leer páginas) usa un perfil PROPIO, separado del tuyo: Chrome no deja
+// controlar el perfil normal desde otro programa. Por eso ahí no están tus cuentas hasta que inicies sesión una vez.
+// Para abrir páginas «para ti» se usa tu perfil normal de Chrome/Edge/Brave, con tu cuenta de siempre.
+const DATOS = {
+  chrome: `${L}\\Google\\Chrome\\User Data`,
+  edge: `${L}\\Microsoft\\Edge\\User Data`,
+  brave: `${L}\\BraveSoftware\\Brave-Browser\\User Data`,
+};
+const sinAcentos = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+function perfilesDe(name) {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(DATOS[name], 'Local State'), 'utf8'));
+    const ic = (j.profile && j.profile.info_cache) || {};
+    const lista = Object.keys(ic).map((k) => ({ dir: k, nombre: String(ic[k].name || k), email: String(ic[k].user_name || '') }));
+    return { lista, ultimo: String((j.profile && j.profile.last_used) || '') };
+  } catch { return { lista: [], ultimo: '' }; }
+}
+const verPerfil = (p) => `«${p.nombre}»${p.email ? ' (' + p.email + ')' : ' (sin cuenta de Google)'}`;
+// Cuenta de Google iniciada en el navegador propio de CORA-IA ('' si no hay)
+function cuentaCora(name) {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'browser-profiles', name, 'Default', 'Preferences'), 'utf8'));
+    const a = (j.account_info || []).find((x) => x && x.email);
+    return a ? a.email : '';
+  } catch { return ''; }
+}
+const sesionViva = (name) => !!(sessions[name] && sessions[name].browser && sessions[name].browser.isConnected());
+
+// Abre el navegador NORMAL del usuario con su perfil y cuenta. Se abre como al hacer doble clic en su icono:
+// CORA-IA no lo controla después (no puede hacer clic ni leer en esa ventana).
+async function abrirPersonal(name, u, modo, perfil) {
+  const exe = findExe(name);
+  if (!exe) throw new Error(`No encontré ${name} instalado en este PC.`);
+  const { lista, ultimo } = perfilesDe(name);
+  let elegido = null;
+  const pedido = sinAcentos(perfil);
+  if (pedido && pedido !== 'personal') {
+    elegido = lista.find((p) => sinAcentos(p.email) === pedido || sinAcentos(p.dir) === pedido)
+      || lista.find((p) => sinAcentos(p.nombre).includes(pedido) || sinAcentos(p.email).includes(pedido));
+    if (!elegido) return `No encontré un perfil de ${name} que coincida con «${perfil}». Perfiles que veo: ${lista.map(verPerfil).join(', ') || 'ninguno'}.`;
+  } else {
+    elegido = lista.find((p) => p.dir === ultimo) || lista[0] || null;
+  }
+  const args = [];
+  if (elegido) args.push(`--profile-directory=${elegido.dir}`);
+  if (modo === 'sesion_nueva') args.push('--incognito');
+  else if (modo === 'ventana_nueva') args.push('--new-window');
+  if (u) args.push(u);
+  dbg(`abriendo ${name} personal perfil=${elegido ? elegido.dir : '(el que Windows elija)'} url=${u || '-'}`);
+  const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
+  const nombre = { chrome: 'Chrome', edge: 'Edge', brave: 'Brave' }[name] || name;
+  const con = elegido ? ` con tu perfil ${verPerfil(elegido)}` : '';
+  const otros = lista.length > 1 ? ` Otros perfiles: ${lista.filter((p) => p !== elegido).map(verPerfil).join(', ')}; si quiere otro, dime cuál.` : '';
+  return `Abrí ${nombre}${con}${u ? ' en ' + u : ''}. Es tu navegador normal: yo no puedo hacer clic ni leer esa ventana ni controlar sus videos (para eso lo abro en el navegador de CORA-IA).${otros}`;
+}
+
+// Navega a la página pedida, salvo que el navegador ya se haya abierto justo en ella
+async function irA(s, destino, recien) {
+  if (recien && s.inicial && s.inicial === destino && s.page === s.pagina0) {
+    await s.page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+    return;
+  }
+  await s.page.goto(destino, { waitUntil: 'domcontentloaded', timeout: 30000 });
+}
+
 const actions = {
-  async abrir({ navegador, url, modo }) {
+  async abrir({ navegador, url, modo, perfil }) {
     const u = String(url || '').trim();
     if (u && !/^https?:\/\//i.test(u)) return 'URL no válida: debe empezar con http:// o https://';
-    const s = await cur(navegador);
+    const quiere = sinAcentos(perfil);
+    const nom = resolverNombre(navegador);
+    // Sin pedir nada especial: si el navegador de CORA-IA ya está abierto se sigue usando; si no, se abre el de la persona
+    // (con su cuenta). «perfil: cora» fuerza el navegador controlable de CORA-IA.
+    if (quiere !== 'cora' && !(!quiere && sesionViva(nom))) return abrirPersonal(nom, u, modo, perfil);
+    const s = await cur(navegador, u || 'https://www.google.com');
     const name = activeName;
+    const recien = !!s.fresh;
     const { before, nueva } = await preparar(s, modo);
     const destino = u || (s.page.url() === 'about:blank' ? 'https://www.google.com' : '');
-    if (destino) await s.page.goto(destino, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await mostrar(s, name, before, nueva);
+    if (destino) await irA(s, destino, recien);
+    await mostrar(s, name, before, nueva, recien);
     const que = destino ? (await s.page.title().catch(() => '') || destino) : 'el navegador';
     const donde = { ventana_nueva: ' en una ventana nueva', sesion_nueva: ' en una sesión nueva (aislada: sin las cuentas iniciadas en la otra ventana)', pestana_nueva: ' en una pestaña nueva' }[modo] || '';
-    return `Abrí ${que} en ${name}${donde} y lo dejé a la vista.`;
+    const cuenta = cuentaCora(name);
+    const quien = cuenta ? ` Cuenta de Google en este navegador: ${cuenta}.` : ' Este es el navegador propio de CORA-IA y no tiene ninguna cuenta de Google iniciada (no es tu perfil normal); si quiere, puede iniciar sesión una sola vez y queda guardada.';
+    return `Abrí ${que} en ${name}${donde} y lo dejé a la vista.${quien}`;
   },
 
   async youtube({ navegador, consulta, numero = 1, modo }) {
-    const s = await cur(navegador);
+    const busqueda = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(consulta);
+    const s = await cur(navegador, busqueda);
     const name = activeName;
+    const recien = !!s.fresh;
     const { before, nueva } = await preparar(s, modo);
-    await s.page.goto('https://www.youtube.com/results?search_query=' + encodeURIComponent(consulta), { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await mostrar(s, name, before, nueva);
+    await irA(s, busqueda, recien);
+    await mostrar(s, name, before, nueva, recien);
     await acceptConsent(s.page);
     await s.page.waitForSelector(VIDEO, { timeout: 15000 });
     const lista = await results(s.page, 5);

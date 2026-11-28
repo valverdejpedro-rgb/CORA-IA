@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('coraSistema', {
   ventana: (req) => ipcRenderer.invoke('sistema:ventana', req),
 });
 
-// Voz de CORA-IA (Edge / ElevenLabs): el audio lo genera el proceso principal
+// Voz de CORA-IA (Edge): el audio lo genera el proceso principal
 contextBridge.exposeInMainWorld('coraVoz', {
   sintetizar: (req) => ipcRenderer.invoke('tts:speak', req),
 });

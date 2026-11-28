@@ -673,32 +673,99 @@ function llamar(env) {
   return p;
 }
 
-// ---------- Etiquetas sin marcas ni modelos ----------
-// forma: 1 altavoces, 2 línea, 3 audífonos, 4 micrófono, 5 auricular con micrófono, 8 digital, 9 pantalla/TV
-function etiqueta(nombre, forma, flujo) {
-  const n = String(nombre || '');
-  const inal = /bluetooth|hands-?free|wireless|inal[aá]mbric|airpods|buds/i.test(n);
-  if (flujo === 'entrada') {
-    if (forma === 5 || forma === 3 || inal) return inal ? 'Micrófono de audífonos inalámbricos' : 'Micrófono de audífonos';
-    if (/array|internal|interno|integrad/i.test(n)) return 'Micrófono interno';
-    if (/usb/i.test(n)) return 'Micrófono USB';
-    if (forma === 2) return 'Entrada de línea';
-    return 'Micrófono';
+// ---------- Tipo de dispositivo: interno / externo / inalámbrico ----------
+//  interno     = el de la laptop (altavoces o micrófono integrados)
+//  externo     = lo que se conecta por plug (jack de 3.5 mm) o por USB
+//  inalambrico = cualquier audífono, altavoz o micrófono inalámbrico (Bluetooth o con receptor USB)
+// Para saberlo con certeza se mira a qué «contenedor» físico pertenece cada punto de audio en Windows
+// (el de la propia laptop, uno Bluetooth o uno USB). Si eso no se puede leer, se adivina por el nombre.
+const SCRIPT_BUS = String.raw`$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$maquina = '00000000-0000-0000-ffff-ffffffffffff'
+function Norm($c) { ([string]$c).Trim().Trim('{', '}').ToLower() }
+function CidsDe($claves) {
+  $h = @{}
+  foreach ($k in $claves) {
+    $raiz = 'HKLM:\SYSTEM\CurrentControlSet\Enum\' + $k
+    if (-not (Test-Path $raiz)) { continue }
+    foreach ($d in Get-ChildItem $raiz) {
+      foreach ($i in Get-ChildItem $d.PSPath) {
+        $c = Norm ((Get-ItemProperty -Path $i.PSPath -Name ContainerID).ContainerID)
+        if ($c -and $c -ne $maquina) { $h[$c] = $true }
+      }
+    }
   }
-  if (forma === 9 || /hdmi|displayport|high definition audio|\btv\b|monitor/i.test(n)) return 'Pantalla o TV';
-  if (forma === 3 || forma === 5 || inal) return inal ? 'Audífonos inalámbricos' : 'Audífonos';
-  if (/usb/i.test(n) || forma === 8 || /external|externo/i.test(n)) return 'Altavoces externos';
-  return 'Altavoces internos';
+  return $h
 }
-let ultimo = { salida: [], entrada: [] }; // claves cortas (salida-1…) -> id real del dispositivo
-function numerar(lista, flujo) {
-  const cuenta = {}, total = {};
-  const base = lista.map((d) => etiqueta(d.nombre, d.forma, flujo));
-  base.forEach((b) => { total[b] = (total[b] || 0) + 1; });
-  return lista.map((d, i) => {
-    const b = base[i]; cuenta[b] = (cuenta[b] || 0) + 1;
-    return { key: `${flujo}-${i + 1}`, id: d.id, etiqueta: total[b] > 1 ? `${b} ${cuenta[b]}` : b, tecnico: d.nombre, activo: !!d.activo, volumen: d.volumen, silenciado: !!d.silenciado };
+$bt = CidsDe @('BTHENUM', 'BTHHFENUM', 'BTHLE', 'BTHLEDEVICE')
+$usb = CidsDe @('USB')
+$raizEp = 'HKLM:\SYSTEM\CurrentControlSet\Enum\SWD\MMDEVAPI'
+$res = @{}
+foreach ($e in Get-ChildItem $raizEp) {
+  $m = [regex]::Match($e.PSChildName, '\.\{([0-9a-fA-F\-]{36})\}\s*$')
+  if (-not $m.Success) { continue }
+  $c = Norm ((Get-ItemProperty -Path $e.PSPath -Name ContainerID).ContainerID)
+  if (-not $c) { $c = Norm ((Get-PnpDeviceProperty -InstanceId ('SWD\MMDEVAPI\' + $e.PSChildName) -KeyName 'DEVPKEY_Device_ContainerId').Data) }
+  if (-not $c) { continue }
+  if ($c -eq $maquina) { $t = 'int' } elseif ($bt.ContainsKey($c)) { $t = 'bt' } elseif ($usb.ContainsKey($c)) { $t = 'usb' } else { $t = 'otro' }
+  $res[$m.Groups[1].Value.ToLower()] = $t
+}
+$pares = foreach ($k in $res.Keys) { '"' + $k + '":"' + $res[$k] + '"' }
+[Console]::Out.Write('{' + (@($pares) -join ',') + '}')
+`;
+// Devuelve { 'guid-del-punto-de-audio': 'int' | 'bt' | 'usb' | 'otro' }; si algo falla, {} (y se usa el nombre). Nunca rechaza.
+function leerBus() {
+  if (process.platform !== 'win32') return Promise.resolve({});
+  return new Promise((resolve) => {
+    const enc = Buffer.from(SCRIPT_BUS, 'utf16le').toString('base64');
+    execFile(PS_EXE, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
+      { windowsHide: true, timeout: 12000, maxBuffer: 1 << 20, encoding: 'utf8' }, (err, out) => {
+        let m = {};
+        try { m = JSON.parse(String(out || '').replace(/^﻿/, '').trim()) || {}; } catch {}
+        resolve(m && typeof m === 'object' ? m : {});
+      });
   });
+}
+const guidDe = (id) => { const m = /\.\{([0-9a-f-]{36})\}\s*$/i.exec(String(id || '')); return m ? m[1].toLowerCase() : ''; };
+
+const RX_INAL = /bluetooth|hands-?free|manos libres|\bag audio\b|a2dp|wireless|inal[aá]mbric|airpods|\bbuds\b/i;
+const RX_PANTALLA = /hdmi|displayport|display audio|nvidia high definition|amd high definition|\btv\b/i;
+const RX_ENCHUFE = /headphone|headset|earphone|auricular|aud[ií]fono|line[ -]?(in|out)|l[ií]nea|mic[ -]?in|entrada de micr/i;
+const RX_MIC_INTERNO = /array|matriz|internal|interno|integrad|built-?in|dmic|digital microphone|smart sound/i;
+// forma (Windows): 1 altavoces, 2 línea, 3 audífonos, 4 micrófono, 5 auricular con micrófono, 8 digital, 9 pantalla/TV
+// bus: 'int' (de la propia laptop) | 'bt' | 'usb' | 'otro' | undefined (no se pudo leer)
+function clasificar(nombre, forma, flujo, bus) {
+  const n = String(nombre || '');
+  const ent = flujo === 'entrada';
+  if (!ent && (forma === 9 || RX_PANTALLA.test(n))) return { tipo: 'pantalla', conexion: 'HDMI/DisplayPort', etiqueta: 'Pantalla o TV' };
+  if (bus === 'bt' || RX_INAL.test(n)) {
+    return { tipo: 'inalambrico', conexion: 'inalámbrica', etiqueta: ent ? 'Micrófono inalámbrico' : forma === 1 ? 'Altavoz inalámbrico' : 'Audífonos inalámbricos' };
+  }
+  const usb = bus === 'usb' || (!bus && /usb/i.test(n));
+  let externo, conexion;
+  if (usb) { externo = true; conexion = 'USB'; }
+  else if (bus === 'otro') { externo = true; conexion = 'cable'; }
+  else if (ent) { externo = forma === 5 || forma === 2 || (RX_ENCHUFE.test(n) && !RX_MIC_INTERNO.test(n)); conexion = externo ? 'plug' : 'interna'; }
+  else { externo = forma === 3 || forma === 5 || forma === 2 || forma === 8 || RX_ENCHUFE.test(n) || /external|externo/i.test(n); conexion = externo ? 'plug' : 'interna'; }
+  if (externo) return { tipo: 'externo', conexion, etiqueta: ent ? 'Micrófono externo' : 'Altavoces externos' };
+  return { tipo: 'interno', conexion: 'interna', etiqueta: ent ? 'Micrófono interno' : 'Altavoces internos' };
+}
+function etiqueta(nombre, forma, flujo, bus) { return clasificar(nombre, forma, flujo, bus).etiqueta; }
+let ultimo = { salida: [], entrada: [] }; // claves cortas (salida-1…) -> id real del dispositivo
+function numerar(lista, flujo, bus) {
+  const mapa = bus || {};
+  const cuenta = {}, total = {};
+  const cls = lista.map((d) => clasificar(d.nombre, d.forma, flujo, mapa[guidDe(d.id)]));
+  cls.forEach((c) => { total[c.etiqueta] = (total[c.etiqueta] || 0) + 1; });
+  return lista.map((d, i) => {
+    const c = cls[i], b = c.etiqueta; cuenta[b] = (cuenta[b] || 0) + 1;
+    return { key: `${flujo}-${i + 1}`, id: d.id, etiqueta: total[b] > 1 ? `${b} ${cuenta[b]}` : b, tipo: c.tipo, conexion: c.conexion, tecnico: d.nombre, bus: mapa[guidDe(d.id)] || '?', activo: !!d.activo, volumen: d.volumen, silenciado: !!d.silenciado };
+  });
+}
+// «externo», «los inalámbricos», «interna»… -> 'interno' | 'externo' | 'inalambrico' (o '' si no es un tipo)
+function tipoDe(txt) {
+  const t = String(txt || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim().replace(/^(los|las|el|la)\s+/, '').replace(/[oa]s?$/, 'o');
+  return ['interno', 'externo', 'inalambrico'].includes(t) ? t : '';
 }
 function parsePlanes(txt) {
   const out = [];
@@ -716,7 +783,7 @@ function leerPlanes() {
 }
 const estadoVol = (o) => `volumen ${o.volumen}%${o.silenciado ? ', SILENCIADO' : ''}`;
 function formatearEstado(est, planes) {
-  const fila = (d) => `- ${d.key} · ${d.etiqueta}${d.activo ? ' · ACTIVO (el que se usa ahora)' : ''} · ${estadoVol(d)} [detalle técnico, no lo menciones salvo que te lo pidan: ${d.tecnico}]`;
+  const fila = (d) => `- ${d.key} · ${d.etiqueta} · tipo ${d.tipo} (conexión ${d.conexion})${d.activo ? ' · ACTIVO (el que se usa ahora)' : ''} · ${estadoVol(d)} [detalle técnico, no lo menciones salvo que te lo pidan: ${d.tecnico}; tipo detectado por ${d.bus === '?' ? 'el nombre' : 'el contenedor físico (' + d.bus + ')'}]`;
   const t = [];
   t.push('SALIDAS DE SONIDO:' + (ultimo.salida.length ? '\n' + ultimo.salida.map(fila).join('\n') : ' ninguna activa'));
   t.push('ENTRADAS (micrófonos):' + (ultimo.entrada.length ? '\n' + ultimo.entrada.map(fila).join('\n') : ' ninguna activa'));
@@ -727,9 +794,11 @@ function formatearEstado(est, planes) {
 
 // ---------- API pública (lista cerrada) ----------
 async function estado() {
-  const r = await llamar({ CORA_OP: 'estado' });
+  // El tipo (interno/externo/inalámbrico) se lee aparte y en paralelo; si tarda más de 6 s se usa el nombre del dispositivo
+  const espera = new Promise((res) => setTimeout(() => res({}), 6000));
+  const [r, bus] = await Promise.all([llamar({ CORA_OP: 'estado' }), Promise.race([leerBus(), espera])]);
   if (!r || !r.ok) return 'No pude leer el estado del sonido: ' + ((r && r.error) || 'error desconocido') + '.';
-  ultimo = { salida: numerar(r.salida || [], 'salida'), entrada: numerar(r.entrada || [], 'entrada') };
+  ultimo = { salida: numerar(r.salida || [], 'salida', bus), entrada: numerar(r.entrada || [], 'entrada', bus) };
   return formatearEstado(r, await leerPlanes());
 }
 const entero = (v, def) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? n : def; };
@@ -751,12 +820,23 @@ async function volumen({ donde, dispositivo, accion, valor } = {}) {
   let flujo = donde === 'entrada' ? 'entrada' : 'salida', id = '', etiquetaDisp = '';
   if (dispositivo) {
     const clave = String(dispositivo).trim().toLowerCase();
-    if (!/^(salida|entrada)-\d{1,2}$/.test(clave)) return 'Ese dispositivo no es válido: usa una clave de sistema_estado (por ejemplo salida-1).';
-    if (!ultimo.salida.length && !ultimo.entrada.length) await estado();
-    flujo = clave.startsWith('entrada') ? 'entrada' : 'salida';
-    const d = ultimo[flujo].find((x) => x.key === clave);
-    if (!d) return 'No encuentro ese dispositivo. Llama primero a sistema_estado para ver los disponibles.';
-    id = d.id; etiquetaDisp = d.etiqueta;
+    const tipo = tipoDe(clave);
+    if (tipo) { // «los externos», «el interno», «los inalámbricos»: se busca entre lo conectado ahora mismo
+      await estado();
+      const lista = ultimo[flujo].filter((x) => x.tipo === tipo);
+      const quien = flujo === 'entrada' ? 'micrófono' : 'salida de sonido';
+      if (!lista.length) return `Ahora mismo no hay ${quien} ${tipo === 'inalambrico' ? 'inalámbrico' : tipo} conectado. Los que hay: ${ultimo[flujo].map((x) => x.etiqueta).join(', ') || 'ninguno'}.`;
+      const d = lista.length === 1 ? lista[0] : lista.find((x) => x.activo);
+      if (!d) return `Hay varios dispositivos de tipo ${tipo}: ${lista.map((x) => `${x.key} (${x.etiqueta})`).join(', ')}. Dime cuál.`;
+      id = d.id; etiquetaDisp = d.etiqueta;
+    } else {
+      if (!/^(salida|entrada)-\d{1,2}$/.test(clave)) return 'Ese dispositivo no es válido: usa una clave de sistema_estado (por ejemplo salida-1) o el tipo: interno, externo o inalambrico.';
+      if (!ultimo.salida.length && !ultimo.entrada.length) await estado();
+      flujo = clave.startsWith('entrada') ? 'entrada' : 'salida';
+      const d = ultimo[flujo].find((x) => x.key === clave);
+      if (!d) return 'No encuentro ese dispositivo. Llama primero a sistema_estado para ver los disponibles.';
+      id = d.id; etiquetaDisp = d.etiqueta;
+    }
   }
   const r = await llamar({ CORA_OP: 'dispositivo', CORA_FLUJO: flujo, CORA_ID: id, CORA_ACCION: accion, CORA_VALOR: String(val.valor) });
   if (!r || !r.ok) return 'No pude hacer el cambio: ' + String((r && r.error) || 'error desconocido').replace(/\.+$/, '') + '.';
@@ -799,4 +879,4 @@ async function ventana({ app: nombre, accion } = {}) {
   return `Hecho. ${r.app}${cant}: ahora ${r.estado}. (Es lo que Windows reporta tras el cambio.)`;
 }
 
-module.exports = { estado, volumen, app, ventana, _t: { etiqueta, numerar, parsePlanes, formatearEstado, validarAccion, setRunner: (fn) => { runner = fn; }, reset: () => { ultimo = { salida: [], entrada: [] }; } } };
+module.exports = { estado, volumen, app, ventana, _t: { etiqueta, clasificar, tipoDe, guidDe, numerar, parsePlanes, formatearEstado, validarAccion, setRunner: (fn) => { runner = fn; }, reset: () => { ultimo = { salida: [], entrada: [] }; } } };
