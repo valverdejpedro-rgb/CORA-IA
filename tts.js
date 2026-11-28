@@ -44,7 +44,12 @@ async function eleven({ text, key, voiceId, rate }) {
       let d = {}; try { d = await r.json(); } catch {}
       const det = d.detail || {}, st = String(det.status || ''), msg = String(det.message || (typeof det === 'string' ? det : '') || '').slice(0, 120);
       if (/quota/i.test(st)) return { ok: false, error: 'se acabaron los caracteres de tu plan de ElevenLabs' };
-      if (r.status === 401) return { ok: false, error: /unusual/i.test(st) ? 'ElevenLabs bloqueó el plan gratis por actividad inusual (VPN o varias cuentas)' : 'la clave de ElevenLabs no es válida' };
+      if (r.status === 401 || r.status === 403) {
+        if (/unusual/i.test(st)) return { ok: false, error: 'ElevenLabs bloqueó el plan gratis por actividad inusual (VPN o varias cuentas)' };
+        if (/permission/i.test(st + ' ' + msg)) return { ok: false, error: 'a tu clave de ElevenLabs le falta el permiso «Text to Speech» (actívalo en la configuración de la clave) [' + (st || r.status) + ']' };
+        if (/invalid_api_key|invalid api key/i.test(st + ' ' + msg)) return { ok: false, error: 'ElevenLabs dice que la clave no existe o está mal copiada [' + (st || r.status) + ']' };
+        return { ok: false, error: 'ElevenLabs rechazó la clave: ' + (msg || st || 'error ' + r.status) };
+      }
       if (r.status === 402 || /paid_plan|library/i.test(st)) return { ok: false, error: 'esa voz requiere un plan de pago de ElevenLabs; elige otra voz' };
       if (r.status === 404 || /voice_not_found/i.test(st)) return { ok: false, error: 'no encontré ese ID de voz en tu cuenta de ElevenLabs' };
       if (r.status === 429) return { ok: false, error: 'ElevenLabs está recibiendo demasiadas peticiones; prueba en un momento' };

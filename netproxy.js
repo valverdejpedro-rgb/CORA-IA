@@ -86,10 +86,13 @@ async function getText(url, { timeout = 15000, max = 1500000, tipos = /text\/|ht
 
 // Buscador por API (Tavily, clave gratis): estable y pensado para IA. Solo se llama desde aquí, nunca desde la página.
 const soloTavily = (u) => u.protocol === 'https:' && u.hostname === 'api.tavily.com';
+let tavilyPausa = 0; // si Tavily dice que se acabó el cupo o la clave falla, se deja de intentar un rato (y se usan los otros buscadores)
 const apiTavily = (key) => async (q) => {
+  if (Date.now() < tavilyPausa) throw new Error('Tavily en pausa por límite');
   const r = await proxyFetch({ url: 'https://api.tavily.com/search', method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
     body: JSON.stringify({ query: q, max_results: 6, include_answer: true, search_depth: 'basic' }), timeout: 20000 }, soloTavily);
-  if (r.status === 401 || r.status === 403) throw new Error('clave de Tavily no válida');
+  if (r.status === 401 || r.status === 403) { tavilyPausa = Date.now() + 10 * 60000; throw new Error('clave de Tavily no válida'); }
+  if ([429, 432, 433].includes(r.status)) { tavilyPausa = Date.now() + 10 * 60000; throw new Error('límite de Tavily (error ' + r.status + ')'); }
   if (r.status !== 200) throw new Error('error ' + r.status);
   const d = JSON.parse(r.body);
   return { respuesta: d.answer || '', resultados: (d.results || []).map((x) => ({ title: x.title || x.url, url: x.url, snippet: String(x.content || '').replace(/\s+/g, ' ').slice(0, 450) })) };
