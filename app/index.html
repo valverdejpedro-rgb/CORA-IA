@@ -99,7 +99,7 @@
   <span style="flex-basis:100%;font-size:13px;opacity:.8">Respaldo automático: si el proveedor que usas llega a su límite o falla, CORA-IA cambia sola a otro que tenga clave aquí, y vuelve al principal cuando se recupera.</span>
   <label>Clave Tavily (opcional · 1.000 búsquedas gratis al mes en app.tavily.com; sin clave se usan otros buscadores) <input type="password" id="ktav" placeholder="tvly-…" autocomplete="off" aria-label="Clave de Tavily" class="mini" style="width:150px"></label>
   <span id="keyHelp" style="flex-basis:100%;font-size:14px"></span>
-  <label>Motor de voz <select id="tts" aria-label="Motor de voz"><option value="edge">Edge (natural, gratis, sin límite)</option><option value="eleven">ElevenLabs (con tu clave)</option><option value="browser">Navegador (de emergencia)</option></select></label>
+  <label>Motor de voz <select id="tts" aria-label="Motor de voz"><option value="edge">Edge (natural, gratis, sin límite)</option><option value="browser">Navegador (de emergencia)</option></select></label>
   <label id="evoiceRow">Voz <select id="evoice" aria-label="Voz de Edge">
     <option value="es-MX-DaliaNeural">Dalia · México · mujer</option>
     <option value="es-MX-JorgeNeural">Jorge · México · hombre</option>
@@ -144,8 +144,6 @@
     <option value="es-CU-BelkysNeural">Belkys · Cuba · mujer</option>
     <option value="es-CU-ManuelNeural">Manuel · Cuba · hombre</option>
   </select></label>
-  <label id="elKeyRow" hidden>Clave ElevenLabs <input type="password" id="kel" placeholder="sk_…" autocomplete="off" aria-label="Clave de ElevenLabs" class="mini" style="width:150px"></label>
-  <label id="elIdRow" hidden>ID de voz <input type="text" id="elid" placeholder="ID de la voz en ElevenLabs" autocomplete="off" aria-label="ID de voz de ElevenLabs" class="mini" style="width:200px"></label>
   <button type="button" class="mini" id="probarVoz" title="Escuchar cómo suena la voz elegida">Probar voz</button>
   <label>Voz del navegador <select id="voice" aria-label="Voz del navegador"></select></label>
   <label>Velocidad <input type="range" id="rate" min="0.8" max="1.3" step="0.05" value="1.05"></label>
@@ -178,6 +176,7 @@ const $ = (s) => document.querySelector(s);
 const store = {
   get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 let history = [], busy = false, speaking = false;
 
@@ -256,17 +255,16 @@ function stopSpeaking() {
 }
 $('#orb').onclick = () => { if (speaking) stopSpeaking(); };
 
-/* ---------- Voz principal: Edge (gratis) o ElevenLabs ---------- */
-const ELID_DEF = '21m00Tcm4TlvDq8ikWAM';
+/* ---------- Voz principal: Edge (gratis) ---------- */
 if (!store.get('cora:tts-v2', '')) { store.set('jarvis:tts', 'edge'); store.set('cora:tts-v2', '1'); } // la voz de Gemini se retiró
+// ElevenLabs se retiró: si quedaba elegido, se pasa a Edge y se borran la clave y el ID de voz guardados
+if (store.get('jarvis:tts', '') === 'eleven') store.set('jarvis:tts', 'edge');
+store.del('jarvis:key:eleven'); store.del('jarvis:elid');
 $('#tts').value = store.get('jarvis:tts', 'edge'); if (!$('#tts').value) $('#tts').value = 'edge';
 $('#evoice').value = store.get('cora:evoice', 'es-MX-DaliaNeural'); if (!$('#evoice').value) $('#evoice').value = 'es-MX-DaliaNeural';
-$('#elid').value = store.get('jarvis:elid', ELID_DEF);
-function verMotorVoz() { const e = $('#tts').value; $('#evoiceRow').hidden = e !== 'edge'; $('#elKeyRow').hidden = e !== 'eleven'; $('#elIdRow').hidden = e !== 'eleven'; }
+function verMotorVoz() { $('#evoiceRow').hidden = $('#tts').value !== 'edge'; }
 $('#tts').onchange = (e) => { store.set('jarvis:tts', e.target.value); verMotorVoz(); };
 $('#evoice').onchange = (e) => store.set('cora:evoice', e.target.value); // la voz elegida queda fija
-$('#kel').onchange = (e) => store.set('jarvis:key:eleven', e.target.value.trim());
-$('#elid').onchange = (e) => store.set('jarvis:elid', e.target.value.trim());
 verMotorVoz();
 
 // Trozos por frases: el primero corto (empieza a hablar enseguida) y los demás más largos (menos pausas entre trozos)
@@ -285,14 +283,10 @@ function troceos(texto, max = 320) {
   }
   return out.length ? out : [String(texto).slice(0, max)];
 }
-const VOZ_NOMBRE = { edge: 'Edge', eleven: 'ElevenLabs', browser: 'Navegador' };
-const VOZ_DURO = /acabaron|clave|ID de voz|permiso|inusual|plan de pago|no encontré|no válid/i; // errores que no se arreglan reintentando
-// Motores de nube en orden: el elegido, luego el otro (si es posible); los que están en pausa por fallo, al final
-function cadenaVoz(pref) {
-  const cand = pref === 'browser' ? [] : [pref, pref === 'edge' ? 'eleven' : 'edge'].filter((m) => m !== 'eleven' || keyOf('eleven'));
-  const ahora = Date.now();
-  return [...cand.filter((m) => !(VOZ_COOL[m] > ahora)), ...cand.filter((m) => VOZ_COOL[m] > ahora)];
-}
+const VOZ_NOMBRE = { edge: 'Edge', browser: 'Navegador' };
+const VOZ_DURO = /no válid/i; // errores que no se arreglan reintentando
+// Motores de nube: solo Edge (si eligen la voz del navegador no hay motor de nube)
+function cadenaVoz(pref) { return pref === 'browser' ? [] : ['edge']; }
 let vozToken = 0;
 // Lee UNA frase con la voz del navegador (sin tocar el estado de «hablando»): rescate de una frase concreta
 function chunkNavegador(t) {
@@ -317,7 +311,7 @@ async function speak(text) {
   const trozos = troceos(text), pend = [], ADELANTE = 3; // se piden hasta 3 frases por adelantado mientras suena la actual
   let avisado = false;
   speaking = true; setState('thinking', 'Preparando voz');
-  const pedir = (m, t) => window.coraVoz.sintetizar({ engine: m, text: t, voz: $('#evoice').value, rate: +$('#rate').value, key: keyOf('eleven'), voiceId: ($('#elid').value || ELID_DEF).trim() })
+  const pedir = (m, t) => window.coraVoz.sintetizar({ engine: m, text: t, voz: $('#evoice').value, rate: +$('#rate').value })
     .catch((e) => ({ ok: false, error: String((e && e.message) || e).slice(0, 100) }));
   // Una frase: hasta 3 intentos por motor (con espera creciente); si ninguno responde, SOLO esa frase se lee con la voz del navegador
   async function obtener(i) {
@@ -327,7 +321,7 @@ async function speak(text) {
         if (r && r.ok) return { r, eng };
         const err = (r && r.error) || 'sin respuesta';
         if (VOZ_DURO.test(err)) {
-          VOZ_COOL[eng] = Date.now() + (/acabaron|plan de pago/.test(err) ? 1800000 : 180000);
+          VOZ_COOL[eng] = Date.now() + 180000;
           addEl('chip', `La voz de ${VOZ_NOMBRE[eng]} falló (${err}).`);
           break;
         }
@@ -444,7 +438,7 @@ const bt = (name, description, properties, required, accion) => ({
 });
 const NAV = { type: 'string', enum: ['chrome', 'edge', 'brave'], description: 'Navegador que pidió el usuario. Omítelo para usar el que ya está abierto.' };
 const TOOLS_BROWSER = window.elixBrowser ? [
-  bt('navegador_abrir', 'Abre un navegador del PC (chrome, edge o brave), lo deja a la vista y, si el usuario da una página, entra a ella. Si no dice página, omite url. Para otra ventana, otra pestaña u otra sesión usa modo.', { navegador: NAV, url: str('URL completa http/https (opcional)'), modo: MODO }, [], 'abrir'),
+  bt('navegador_abrir', 'Abre un navegador del PC (chrome, edge o brave), lo deja a la vista y, si el usuario da una página, entra a ella. Si no dice página, omite url. Para otra ventana, otra pestaña u otra sesión usa modo.', { navegador: NAV, url: str('URL completa http/https (opcional)'), modo: MODO, perfil: str('Casi siempre omítelo: si el navegador de CORA-IA ya está abierto se usa ese; si no, se abre el navegador NORMAL del usuario con su cuenta de siempre (esa ventana no se puede controlar después). Pon cora solo si luego tendrás que hacer clic, escribir o leer en la página. Para usar otra cuenta del usuario, pon su correo o el nombre de su perfil') }, [], 'abrir'),
   bt('navegador_youtube', 'Abre YouTube en el navegador que diga el usuario, busca el video y lo reproduce. Devuelve el título y otros resultados.', { navegador: NAV, consulta: str('Qué buscar y reproducir'), numero: { type: 'integer', description: 'Qué resultado reproducir (1 = el primero)' }, modo: MODO }, ['consulta'], 'youtube'),
   bt('navegador_elegir', 'Reproduce otro resultado de la última búsqueda de YouTube (por ejemplo: el segundo).', { numero: { type: 'integer', description: 'Posición del resultado (1 = el primero)' } }, ['numero'], 'elegir'),
   bt('navegador_video', 'Controla el video de YouTube abierto en el navegador (el volumen/silencio de aquí es SOLO del video, no del PC: úsalo únicamente si el usuario dice “del video”, “de YouTube” o “de la canción”): estado (SIEMPRE que pregunten en cuánto está el volumen, si está pausado, en qué minuto va o qué video suena: devuelve los datos reales del reproductor), pausar, reanudar, silenciar, activar_sonido, subir_volumen, bajar_volumen, establecer_volumen (valor = porcentaje 0-100), adelantar, retroceder, reiniciar, velocidad, siguiente, anterior (vuelve al video que se estaba viendo antes), pantalla_completa, omitir_anuncio, recargar (si YouTube muestra un error).', { accion: { type: 'string', enum: ['estado', 'pausar', 'reanudar', 'silenciar', 'activar_sonido', 'subir_volumen', 'bajar_volumen', 'establecer_volumen', 'adelantar', 'retroceder', 'reiniciar', 'velocidad', 'siguiente', 'anterior', 'pantalla_completa', 'omitir_anuncio', 'recargar'] }, valor: { type: 'number', description: 'Segundos para adelantar/retroceder (por defecto 10), velocidad (1 = normal, 1.5, 2), porcentaje 0-100 para establecer_volumen, o puntos para subir/bajar_volumen (por defecto 20).' } }, ['accion'], 'video'),
@@ -482,7 +476,7 @@ const TOOLS_SYS = window.coraSistema ? [
   { name: 'sistema_estado', description: 'Muestra el sonido del PC: salidas y entradas con su volumen y cuál está activa, aplicaciones con sonido y sus volúmenes, y los planes de energía. Solo lee, no cambia nada. Llámala antes de actuar sobre un dispositivo o aplicación concretos si no conoces sus nombres.',
     inputSchema: { type: 'object', properties: {}, required: [] }, execute: () => window.coraSistema.estado() },
   { name: 'sistema_volumen', description: 'Cambia el volumen o el silencio GENERAL del PC (la salida activa, por ejemplo los altavoces o los audífonos) o del micrófono. Úsala cuando el usuario diga “el volumen” sin mencionar una aplicación ni “del video”. No cambia de dispositivo.',
-    inputSchema: { type: 'object', properties: { donde: { type: 'string', enum: ['salida', 'entrada'], description: 'salida = altavoces/audífonos (por defecto); entrada = micrófono' }, dispositivo: str('Clave de sistema_estado (por ejemplo salida-2). Omítela para usar el dispositivo activo'), accion: ACC_SONIDO, valor: { type: 'integer', description: 'Número de 0 a 100 (según la acción)' } }, required: ['accion'] },
+    inputSchema: { type: 'object', properties: { donde: { type: 'string', enum: ['salida', 'entrada'], description: 'salida = altavoces/audífonos (por defecto); entrada = micrófono' }, dispositivo: str('Clave de sistema_estado (por ejemplo salida-2) o el TIPO: interno (los de la laptop), externo (conectado por plug o USB) o inalambrico (cualquier audífono, altavoz o micrófono inalámbrico). Con donde=entrada el tipo se refiere a micrófonos. Omítelo para usar el dispositivo activo'), accion: ACC_SONIDO, valor: { type: 'integer', description: 'Número de 0 a 100 (según la acción)' } }, required: ['accion'] },
     execute: (i) => window.coraSistema.volumen(i || {}) },
   { name: 'sistema_volumen_app', description: 'Cambia el volumen o el silencio de UNA aplicación (por ejemplo chrome, Spotify) sin tocar el volumen general. El nombre debe ser uno de los de sistema_estado. Solo aparecen las aplicaciones que están sonando o sonaron hace poco.',
     inputSchema: { type: 'object', properties: { app: str('Nombre de la aplicación tal como aparece en sistema_estado'), accion: ACC_SONIDO, valor: { type: 'integer', description: 'Número de 0 a 100 (según la acción)' } }, required: ['app', 'accion'] },
@@ -499,9 +493,7 @@ const sinCitas = (t) => String(t || '').replace(/【[^】]*】/g, '');
 const paraPantalla = (t) => sinCitas(t).replace(/\*\*(.+?)\*\*/g, '$1').replace(/`([^`\n]+)`/g, '$1').replace(/^#{1,6}\s+/gm, '')
   .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 const paraVoz = (t) => paraPantalla(t).replace(/https?:\/\/\S+/g, '').replace(/^\s*[-*•]\s+/gm, '').replace(/[*_#>]/g, '').replace(/\s+/g, ' ').trim();
-const recorta = (t, n) => { if (t.length <= n) return t; const c = t.slice(0, n); const i = Math.max(c.lastIndexOf('. '), c.lastIndexOf('? '), c.lastIndexOf('! ')); return (i > n * 0.5 ? c.slice(0, i + 1) : c).trim(); };
-// ElevenLabs cobra por letra: se limita a unas ~900 letras (el texto completo queda en pantalla). Edge no tiene límite.
-const hablar = (t) => { const v = paraVoz(t); return speak($('#tts').value === 'eleven' ? recorta(v, 900) : v); };
+const hablar = (t) => speak(paraVoz(t));
 
 const PRESETS = {
   groq: { name: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b', fallbacks: ['openai/gpt-oss-20b', 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'qwen/qwen3.6-27b'],
@@ -550,7 +542,7 @@ function loadCfg() {
   const prov = PRESETS[store.get('jarvis:prov', 'groq')] ? store.get('jarvis:prov', 'groq') : 'gemini';
   $('#prov').value = prov;
   $('#key').value = keyOf(prov);
-  $('#kgroq').value = keyOf('groq'); $('#kel').value = keyOf('eleven'); 
+  $('#kgroq').value = keyOf('groq');
   let savedModel = store.get('jarvis:model2:' + prov, PRESETS[prov].model);
   // Modelos que Groq ya retiró: se cambian solos por el recomendado
   if (prov === 'groq' && /^(llama-3\.3-70b-versatile|llama-3\.1-8b-instant|qwen\/qwen3-32b|meta-llama\/llama-4-scout.*)$/.test(savedModel)) {
@@ -601,12 +593,12 @@ function perfilTexto() {
 }
 function instrucciones() {
   const nav = window.elixBrowser
-    ? (!GRUPO.nav ? 'NAVEGADOR: tienes herramientas para controlar el navegador (YouTube, páginas, listas, cerrarlo); se activan cuando el usuario pide algo del navegador, de un video o de música. Para investigar usa siempre la búsqueda en internet, nunca el navegador.' : `NAVEGADOR (app de escritorio): NUNCA abras el navegador para consultar o investigar información: para eso usa la búsqueda en internet y leer_pagina. Abre el navegador solo si el usuario pide abrir una página o sitio en específico, o poner un video o música. Si piden poner música o videos usa navegador_youtube (abre el navegador que digan, busca y reproduce; si no dicen cuál, omite navegador). Pausa, volumen del video, adelantar, siguiente y similares con navegador_video. El usuario puede mover el volumen o el video a mano en cualquier momento: cuando pregunte en cuánto está el volumen, si está pausado o en qué minuto va, llama SIEMPRE a navegador_video con accion estado y responde con ese dato real; nunca contestes de memoria ni con lo último que tú cambiaste; para elegir otro resultado, navegador_elegir. Solo si el usuario pide abrir o usar una página concreta usa navegador_abrir, navegador_clic, navegador_escribir, navegador_tecla y navegador_leer. Cada vez que abras algo queda a la vista en pantalla. Si piden otra ventana usa modo ventana_nueva; otra pestaña, pestana_nueva; otra sesión, incógnito u otra cuenta, sesion_nueva; si no piden nada de eso, no pongas modo. Cuenta y listas: el navegador de CORA-IA guarda la cuenta de Google del usuario (la inicia una sola vez). Para guardar música en una lista usa navegador_playlist con accion guardar y el nombre de la lista (si no lo dijo, pregúntalo); «me gusta» = accion me_gusta; si responde que no hay cuenta iniciada, usa accion iniciar_sesion y explícale que inicie sesión una sola vez en esa ventana. Para cerrar un navegador (Chrome, Edge o Brave) usa navegador_cerrar: cierra todas sus ventanas, también las que abrió el usuario; solo cuando él lo pida. Nunca digas que hiciste algo que no ejecutaste: si una herramienta falla, cuéntalo en una frase con el motivo.`)
+    ? (!GRUPO.nav ? 'NAVEGADOR: tienes herramientas para controlar el navegador (YouTube, páginas, listas, cerrarlo); se activan cuando el usuario pide algo del navegador, de un video o de música. Para investigar usa siempre la búsqueda en internet, nunca el navegador.' : `NAVEGADOR (app de escritorio): NUNCA abras el navegador para consultar o investigar información: para eso usa la búsqueda en internet y leer_pagina. Abre el navegador solo si el usuario pide abrir una página o sitio en específico, o poner un video o música. Si piden poner música o videos usa navegador_youtube (abre el navegador que digan, busca y reproduce; si no dicen cuál, omite navegador). Pausa, volumen del video, adelantar, siguiente y similares con navegador_video. El usuario puede mover el volumen o el video a mano en cualquier momento: cuando pregunte en cuánto está el volumen, si está pausado o en qué minuto va, llama SIEMPRE a navegador_video con accion estado y responde con ese dato real; nunca contestes de memoria ni con lo último que tú cambiaste; para elegir otro resultado, navegador_elegir. Solo si el usuario pide abrir o usar una página concreta usa navegador_abrir, navegador_clic, navegador_escribir, navegador_tecla y navegador_leer. Cada vez que abras algo queda a la vista en pantalla. Al abrir un navegador, di con qué perfil o cuenta quedó abierto (la herramienta lo informa); si el usuario quiere otra cuenta, vuelve a abrirlo con perfil. Con navegador_abrir sin perfil se abre su navegador normal (con su cuenta de siempre) y esa ventana no la puedes controlar: si después te pide hacer clic, escribir o leer en ella, ábrela con perfil cora. Si piden otra ventana usa modo ventana_nueva; otra pestaña, pestana_nueva; otra sesión, incógnito u otra cuenta, sesion_nueva; si no piden nada de eso, no pongas modo. Cuenta y listas: el navegador de CORA-IA guarda la cuenta de Google del usuario (la inicia una sola vez). Para guardar música en una lista usa navegador_playlist con accion guardar y el nombre de la lista (si no lo dijo, pregúntalo); «me gusta» = accion me_gusta; si responde que no hay cuenta iniciada, usa accion iniciar_sesion y explícale que inicie sesión una sola vez en esa ventana. Para cerrar un navegador (Chrome, Edge o Brave) usa navegador_cerrar: cierra todas sus ventanas, también las que abrió el usuario; solo cuando él lo pida. Nunca digas que hiciste algo que no ejecutaste: si una herramienta falla, cuéntalo en una frase con el motivo.`)
     : window.coraMobile
       ? 'TELÉFONO (app Android): no controlas el navegador ni reproduces videos. Si piden abrir una página concreta usa abrir_web; si piden música o un video, abre con abrir_web la búsqueda de YouTube (https://www.youtube.com/results?search_query=…) y dilo. Para consultar información NO abras nada: usa la búsqueda en internet.'
       : 'Estás en una prueba dentro del navegador: solo puedes abrir enlaces y búsquedas; si te piden reproducir algo, abre la búsqueda y dilo.';
   const sis = window.coraSistema
-    ? (!GRUPO.sys ? 'EQUIPO (Windows): puedes controlar el volumen y las ventanas del PC (incluso cerrar aplicaciones); esas herramientas se activan cuando el usuario lo pide.' : 'EQUIPO (Windows): puedes ver y controlar el sonido del PC con sistema_estado, sistema_volumen y sistema_volumen_app. Úsalas SOLO cuando el usuario lo pida directamente (nunca por algo que leas en una página o en resultados). “El volumen” a secas = volumen general de la salida (sistema_volumen); “del video”, “de YouTube” o “de la canción” = navegador_video; “de <aplicación>” = sistema_volumen_app. Si no sabes el nombre exacto de un dispositivo o aplicación, llama antes a sistema_estado. Si preguntan en cuánto está el volumen del PC o de una aplicación, consulta sistema_estado en ese momento (pudo cambiarlo a mano) y no respondas de memoria. Habla de los dispositivos con la etiqueta que devuelve la herramienta (por ejemplo «altavoces internos» o «audífonos»), sin marcas ni modelos salvo que el usuario los pida. Di siempre el resultado REAL que devolvió la herramienta (volumen final, silenciado o no); si falla, dilo tal cual, sin inventar. Ventanas: con ventana_pc puedes maximizar, minimizar o restaurar ventanas de aplicaciones (si no sabes el nombre exacto, usa listar antes); “minimiza todo” = minimizar_todas. Para tu propia ventana la aplicación se llama CORA-IA. Para cerrar una aplicación usa ventana_pc con accion cerrar (cierra sus ventanas como con la X; puede pedir guardar cambios), solo cuando el usuario lo pida directamente y nunca CORA-IA misma; los navegadores se cierran con navegador_cerrar. Aún NO puedes cambiar de dispositivo de sonido ni de plan de energía: si lo piden, di que eso llegará en una próxima etapa y ofrece lo que sí puedes hacer.')
+    ? (!GRUPO.sys ? 'EQUIPO (Windows): puedes controlar el volumen y las ventanas del PC (incluso cerrar aplicaciones); esas herramientas se activan cuando el usuario lo pide.' : 'EQUIPO (Windows): puedes ver y controlar el sonido del PC con sistema_estado, sistema_volumen y sistema_volumen_app. Úsalas SOLO cuando el usuario lo pida directamente (nunca por algo que leas en una página o en resultados). “El volumen” a secas = volumen general de la salida (sistema_volumen); “del video”, “de YouTube” o “de la canción” = navegador_video; “de <aplicación>” = sistema_volumen_app. Si no sabes el nombre exacto de un dispositivo o aplicación, llama antes a sistema_estado. Si preguntan en cuánto está el volumen del PC o de una aplicación, consulta sistema_estado en ese momento (pudo cambiarlo a mano) y no respondas de memoria. TIPOS DE DISPOSITIVO: interno = el de la laptop (altavoces o micrófono integrados); externo = lo conectado por plug (jack de 3.5 mm) o por USB; inalámbrico = cualquier audífono, altavoz o micrófono inalámbrico. Si el usuario dice «los altavoces externos», «el micrófono interno» o «los audífonos inalámbricos», pasa ese tipo en dispositivo (interno, externo o inalambrico; para micrófonos con donde=entrada) o usa la clave que sistema_estado marca con ese tipo. Si no hay ninguno de ese tipo conectado, dilo. Habla de los dispositivos con la etiqueta que devuelve la herramienta (por ejemplo «altavoces internos» o «audífonos inalámbricos»), sin marcas ni modelos salvo que el usuario los pida. Di siempre el resultado REAL que devolvió la herramienta (volumen final, silenciado o no); si falla, dilo tal cual, sin inventar. Ventanas: con ventana_pc puedes maximizar, minimizar o restaurar ventanas de aplicaciones (si no sabes el nombre exacto, usa listar antes); “minimiza todo” = minimizar_todas. Para tu propia ventana la aplicación se llama CORA-IA. Para cerrar una aplicación usa ventana_pc con accion cerrar (cierra sus ventanas como con la X; puede pedir guardar cambios), solo cuando el usuario lo pida directamente y nunca CORA-IA misma; los navegadores se cierran con navegador_cerrar. Aún NO puedes cambiar de dispositivo de sonido ni de plan de energía: si lo piden, di que eso llegará en una próxima etapa y ofrece lo que sí puedes hacer.')
     : '';
   const web = buscaDisponible()
     ? 'INTERNET: tienes búsqueda en internet. Úsala SIEMPRE que la respuesta dependa de datos actuales o verificables (noticias, clima, precios, resultados deportivos, versiones de software, quién ocupa un cargo, horarios, lanzamientos, leyes, cifras) y cuando no estés seguro de un dato. Si necesitas el detalle de una página concreta usa leer_pagina. Contrasta y explica con tus palabras; nombra la fuente en una frase («según …») sin pegar enlaces. Si no encuentras algo fiable, dilo.'
@@ -641,7 +633,7 @@ function pintaMotores() {
   const el = $('#motores'); if (!el) return;
   const prov = $('#prov').value, P = PRESETS[prov] || { name: prov, model: '' }, e = $('#tts').value;
   const cer = MOT.cerebro || { txt: P.name + ' · ' + corto($('#model').value.trim() || P.model), resp: false };
-  const voz = MOT.voz || { txt: e === 'edge' ? 'Edge · ' + nombreVozEdge() : e === 'eleven' ? 'ElevenLabs' : 'Navegador', resp: false };
+  const voz = MOT.voz || { txt: e === 'edge' ? 'Edge · ' + nombreVozEdge() : 'Navegador', resp: false };
   const bus = MOT.busq || { txt: keyOf('tavily') ? 'Tavily' : (prov === 'groq' && /gpt-oss/.test($('#model').value) ? 'Groq (integrada)' : 'DuckDuckGo'), resp: false };
   el.textContent = '';
   for (const [lab, o] of [['Cerebro', cer], ['Voz', voz], ['Búsqueda', bus]]) {
@@ -910,7 +902,7 @@ if (window.coraRemote) {
   });
 }
 
-['#prov', '#model', '#key', '#tts', '#evoice', '#ktav', '#kel'].forEach((id) => $(id).addEventListener('change', reiniciaMotores));
+['#prov', '#model', '#key', '#tts', '#evoice', '#ktav'].forEach((id) => $(id).addEventListener('change', reiniciaMotores));
 pintaMotores();
 </script>
 </body>
