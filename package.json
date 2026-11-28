@@ -33,6 +33,7 @@
       "browser.js",
       "netproxy.js",
       "tts.js",
+      "sistema.js",
       "remote.js",
       "app/**/*"
     ],

@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('coraWeb', {
   read: (url) => ipcRenderer.invoke('web:read', url),
 });
 
+// Control del equipo (sonido): solo estas funciones, sin comandos libres
+contextBridge.exposeInMainWorld('coraSistema', {
+  estado: () => ipcRenderer.invoke('sistema:estado'),
+  volumen: (req) => ipcRenderer.invoke('sistema:volumen', req),
+  app: (req) => ipcRenderer.invoke('sistema:app', req),
+});
+
 // Voz de CORA-IA (Edge / ElevenLabs): el audio lo genera el proceso principal
 contextBridge.exposeInMainWorld('coraVoz', {
   sintetizar: (req) => ipcRenderer.invoke('tts:speak', req),
